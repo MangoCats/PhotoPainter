@@ -4,6 +4,7 @@ mod renderer;
 
 use std::sync::Arc;
 use std::time::Duration;
+use tower_http::trace::TraceLayer;
 use axum::{
     extract::State,
     http::{header, HeaderMap, HeaderValue, Request, StatusCode},
@@ -83,6 +84,7 @@ async fn main() {
 
     let app = Router::new()
         .route("/api/image", get(get_image))
+        .layer(TraceLayer::new_for_http())
         .with_state(state);
 
     let addr = "0.0.0.0:7654";
