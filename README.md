@@ -72,7 +72,22 @@ E6 color palette (empirically verified): `0x0` Black, `0x1` White, `0x2` Yellow,
 
 ### Server
 
-Requires Rust. Run on the Raspberry Pi (or any always-on host on the same LAN):
+#### Install Rust on Raspberry Pi OS (first time only)
+
+```bash
+# Install rustup (installs the stable toolchain automatically)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+# Follow the prompts, then reload your shell
+source "$HOME/.cargo/env"
+
+# Verify
+rustc --version
+cargo --version
+```
+
+Raspberry Pi OS ships with the C linker Rust needs (`gcc`), so no extra packages are required on a standard install. If you get a linker error on a minimal/lite image, run `sudo apt install build-essential` first.
+
+#### Build and run
 
 ```bash
 cd server
@@ -81,6 +96,28 @@ cargo build --release
 ```
 
 Listens on `0.0.0.0:7654`. Set `RUST_LOG=info` for request logging.
+
+To run it automatically on boot, create a systemd unit:
+
+```ini
+# /etc/systemd/system/photopainter.service
+[Unit]
+Description=PhotoPainter dashboard server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/home/pi/PhotoPainter/server/target/release/photopainter-server
+Restart=on-failure
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl enable --now photopainter
+```
 
 ## HTTP protocol
 
