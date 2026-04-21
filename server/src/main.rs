@@ -1,4 +1,5 @@
 mod font;
+mod gcal_creds;
 mod image;
 mod location;
 mod modules;
@@ -19,6 +20,7 @@ use tracing_subscriber::{fmt, EnvFilter};
 use chrono::{DateTime, Local};
 
 use modules::clock::ClockModule;
+use modules::gcal::GCalModule;
 use modules::rain::{RainModule, NearTermRain};
 use modules::weather::{WeatherModule, WeatherData};
 use renderer::{render, full_screen, RenderedImage};
@@ -66,6 +68,7 @@ struct AppState {
     fw_version: RwLock<String>,
     weather:    WeatherModule,
     rain:       RainModule,
+    gcal:       GCalModule,
     displayed:  RwLock<Option<DisplayedState>>,
 }
 type SharedState = Arc<AppState>;
@@ -100,7 +103,7 @@ async fn commit_displayed(
 async fn render_loop(state: SharedState) {
     let clock = ClockModule;
     loop {
-        tokio::join!(state.weather.refresh(), state.rain.refresh());
+        tokio::join!(state.weather.refresh(), state.rain.refresh(), state.gcal.refresh());
         let now       = Local::now();
         let weather   = state.weather.peek();
         let near_rain = state.rain.peek_near();
@@ -116,7 +119,7 @@ async fn render_loop(state: SharedState) {
         if should_render {
             let fw_ver = state.fw_version.read().await.clone();
             let image  = render(
-                &[(&clock, full_screen()), (&state.weather, full_screen()), (&state.rain, full_screen())],
+                &[(&clock, full_screen()), (&state.weather, full_screen()), (&state.rain, full_screen()), (&state.gcal, full_screen())],
                 SERVER_VERSION,
                 &fw_ver,
             );
@@ -162,7 +165,7 @@ async fn get_image(
             let weather = state.weather.peek();
             let near_rain = state.rain.peek_near();
             let new_image = render(
-                &[(&clock, full_screen()), (&state.weather, full_screen()), (&state.rain, full_screen())],
+                &[(&clock, full_screen()), (&state.weather, full_screen()), (&state.rain, full_screen()), (&state.gcal, full_screen())],
                 SERVER_VERSION,
                 &fw_str,
             );
@@ -212,12 +215,14 @@ async fn main() {
     let clock   = ClockModule;
     let weather = WeatherModule::new();
     let rain    = RainModule::new();
-    let initial = render(&[(&clock, full_screen()), (&weather, full_screen()), (&rain, full_screen())], SERVER_VERSION, "unknown");
+    let gcal    = GCalModule::new();
+    let initial = render(&[(&clock, full_screen()), (&weather, full_screen()), (&rain, full_screen()), (&gcal, full_screen())], SERVER_VERSION, "unknown");
     let state: SharedState = Arc::new(AppState {
         image:      RwLock::new(initial),
         fw_version: RwLock::new("unknown".to_string()),
         weather,
         rain,
+        gcal,
         displayed:  RwLock::new(None),  // forces a render on first loop iteration
     });
 
