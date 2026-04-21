@@ -8,7 +8,7 @@
 #define LED_RED    45
 #define LED_GREEN  42
 
-// DEBUG: keeps USB alive between polls for easier testing; set false for battery use
+// DEBUG: keeps USB alive between polls; set false for battery use
 #define DEBUG_NO_SLEEP true
 
 // ── RTC-retained state ────────────────────────────────────────────────────────
@@ -17,12 +17,9 @@ RTC_DATA_ATTR static uint32_t s_poll_interval = DEFAULT_POLL_INTERVAL_SEC;
 
 // ── LED helpers ───────────────────────────────────────────────────────────────
 static void leds_init() {
-    pinMode(LED_RED,   OUTPUT);
-    pinMode(LED_GREEN, OUTPUT);
-    digitalWrite(LED_RED,   LOW);
-    digitalWrite(LED_GREEN, LOW);
+    pinMode(LED_RED,   OUTPUT); digitalWrite(LED_RED,   LOW);
+    pinMode(LED_GREEN, OUTPUT); digitalWrite(LED_GREEN, LOW);
 }
-
 static void blink(int pin, int times, int on_ms = 150, int off_ms = 150) {
     for (int i = 0; i < times; ++i) {
         digitalWrite(pin, HIGH); delay(on_ms);
@@ -30,10 +27,7 @@ static void blink(int pin, int times, int on_ms = 150, int off_ms = 150) {
     }
 }
 
-// ── EPD pin helpers ───────────────────────────────────────────────────────────
-static void epd_select()   { digitalWrite(EPD_CS, LOW);  }
-static void epd_deselect() { digitalWrite(EPD_CS, HIGH); }
-
+// ── EPD SPI (bit-banged) ──────────────────────────────────────────────────────
 static void epd_spi_byte(uint8_t b) {
     for (int i = 7; i >= 0; --i) {
         digitalWrite(EPD_MOSI, (b >> i) & 1);
@@ -41,17 +35,16 @@ static void epd_spi_byte(uint8_t b) {
         digitalWrite(EPD_SCK,  LOW);
     }
 }
-
 static void epd_cmd(uint8_t cmd) {
     digitalWrite(EPD_DC, LOW);
-    epd_select(); epd_spi_byte(cmd); epd_deselect();
+    digitalWrite(EPD_CS, LOW);  epd_spi_byte(cmd);  digitalWrite(EPD_CS, HIGH);
 }
 static void epd_data(uint8_t d) {
     digitalWrite(EPD_DC, HIGH);
-    epd_select(); epd_spi_byte(d); epd_deselect();
+    digitalWrite(EPD_CS, LOW);  epd_spi_byte(d);    digitalWrite(EPD_CS, HIGH);
 }
-
 static void epd_wait_busy() {
+    // BUSY HIGH = idle, LOW = working
     while (digitalRead(EPD_BUSY) == LOW) delay(10);
 }
 
@@ -62,7 +55,6 @@ static void epd_init() {
     pinMode(EPD_RST,  OUTPUT); pinMode(EPD_BUSY, INPUT);
     pinMode(EPD_PWR,  OUTPUT);
     digitalWrite(EPD_PWR, HIGH); delay(20);
-
     digitalWrite(EPD_RST, HIGH); delay(20);
     digitalWrite(EPD_RST, LOW);  delay(2);
     digitalWrite(EPD_RST, HIGH); delay(20);
@@ -93,23 +85,29 @@ static void epd_init() {
     epd_cmd(0xE6); epd_data(0x00);
 }
 
-static void epd_show(const uint8_t* packed, size_t len) {
+// ── EPD refresh trigger (call after all pixel data is written) ────────────────
+static void epd_refresh() {
+    epd_cmd(0x04); epd_data(0x00);   // power on
+    epd_wait_busy();
+    epd_cmd(0x12); epd_data(0x00);   // refresh
+    delay(200);
+    while (digitalRead(EPD_BUSY) == HIGH) delay(10);  // wait LOW (started)
+    while (digitalRead(EPD_BUSY) == LOW)  delay(10);  // wait HIGH (done ~30s)
+    epd_cmd(0x02); epd_data(0x00);   // power off
+    epd_wait_busy();
+}
+
+// ── Solid-colour fill — no buffer required ────────────────────────────────────
+// packed_byte: high nibble = left pixel, low nibble = right pixel
+// e.g. 0x11=white, 0x22=yellow, 0x33=red, 0x55=blue, 0x66=green, 0x00=black
+static void epd_fill(uint8_t packed_byte) {
+    epd_init();
     epd_cmd(0x10);
     digitalWrite(EPD_DC, HIGH);
-    epd_select();
-    for (size_t i = 0; i < len; ++i) epd_spi_byte(packed[i]);
-    epd_deselect();
-
-    epd_cmd(0x04); epd_data(0x00);
-    epd_wait_busy();
-
-    epd_cmd(0x12); epd_data(0x00);
-    delay(200);
-    while (digitalRead(EPD_BUSY) == HIGH) delay(10);
-    while (digitalRead(EPD_BUSY) == LOW)  delay(10);
-
-    epd_cmd(0x02); epd_data(0x00);
-    epd_wait_busy();
+    digitalWrite(EPD_CS, LOW);
+    for (int i = 0; i < EPD_IMAGE_BYTES; ++i) epd_spi_byte(packed_byte);
+    digitalWrite(EPD_CS, HIGH);
+    epd_refresh();
 }
 
 // ── AXP2101 init ─────────────────────────────────────────────────────────────
@@ -139,33 +137,32 @@ static bool wifi_connect() {
 // ── RTC sync ──────────────────────────────────────────────────────────────────
 static void maybe_sync_rtc(const String& s) {
     if (s.isEmpty()) return;
-    int64_t server_ts = s.toInt();
-    if (server_ts <= 0) return;
-    struct timeval tv_now{};
-    gettimeofday(&tv_now, nullptr);
-    if (llabs(server_ts - (int64_t)tv_now.tv_sec) > 30) {
-        struct timeval tv = { (time_t)server_ts, 0 };
+    int64_t ts = s.toInt();
+    if (ts <= 0) return;
+    struct timeval now{};
+    gettimeofday(&now, nullptr);
+    if (llabs(ts - (int64_t)now.tv_sec) > 30) {
+        struct timeval tv = { (time_t)ts, 0 };
         settimeofday(&tv, nullptr);
     }
 }
 
-// ── HTTP poll ─────────────────────────────────────────────────────────────────
+// ── HTTP poll — streams body directly to EPD, no large buffer needed ──────────
 static bool poll_server() {
-    static const char* kWantHeaders[] = { "ETag", "X-Poll-Interval", "X-Server-Time" };
+    static const char* kHeaders[] = { "ETag", "X-Poll-Interval", "X-Server-Time" };
     HTTPClient http;
     http.begin(SERVER_URL);
     http.setTimeout(HTTP_TIMEOUT_MS);
-    http.collectHeaders(kWantHeaders, 3);
+    http.collectHeaders(kHeaders, 3);
     http.addHeader("X-Device-ID", WiFi.macAddress());
     if (s_etag[0] != '\0') http.addHeader("If-None-Match", s_etag);
 
     int code = http.GET();
 
     maybe_sync_rtc(http.header("X-Server-Time"));
-
-    String new_interval = http.header("X-Poll-Interval");
-    if (!new_interval.isEmpty()) {
-        uint32_t v = constrain((uint32_t)new_interval.toInt(),
+    String intvl = http.header("X-Poll-Interval");
+    if (!intvl.isEmpty()) {
+        uint32_t v = constrain((uint32_t)intvl.toInt(),
                                MIN_POLL_INTERVAL_SEC, MAX_POLL_INTERVAL_SEC);
         s_poll_interval = v;
     }
@@ -173,7 +170,6 @@ static bool poll_server() {
     if (code == 304) { http.end(); return false; }
 
     if (code != 200) {
-        // Error: red blinks = HTTP hundreds digit
         blink(LED_RED, max(1, code / 100), 300, 300);
         http.end();
         return false;
@@ -182,51 +178,44 @@ static bool poll_server() {
     String etag = http.header("ETag");
     if (!etag.isEmpty()) etag.toCharArray(s_etag, sizeof(s_etag));
 
-    // Content-Length is advisory only — stream exactly EPD_IMAGE_BYTES regardless
-    int content_len = http.getSize();
-    if (content_len > 0 && content_len != EPD_IMAGE_BYTES) {
-        // Server claims a size we don't expect — blink both together 5x then abort
-        for (int i = 0; i < 5; ++i) {
-            digitalWrite(LED_RED, HIGH); digitalWrite(LED_GREEN, HIGH); delay(600);
-            digitalWrite(LED_RED, LOW);  digitalWrite(LED_GREEN, LOW);  delay(400);
-        }
-        http.end();
-        return false;
-    }
-
-    uint8_t* buf = (uint8_t*)ps_malloc(EPD_IMAGE_BYTES);
-    if (!buf) {
-        blink(LED_RED, 8, 100, 100);  // rapid red = malloc failed
-        http.end();
-        return false;
-    }
+    // ── Stream HTTP body directly to EPD ──────────────────────────────────────
+    epd_init();
+    epd_cmd(0x10);
+    digitalWrite(EPD_DC, HIGH);
+    digitalWrite(EPD_CS, LOW);
 
     WiFiClient* stream = http.getStreamPtr();
+    uint8_t chunk[256];
     size_t received = 0;
-    uint32_t t0 = millis();
+    uint32_t t_last = millis();
+
     while (received < (size_t)EPD_IMAGE_BYTES) {
         int avail = stream->available();
         if (avail > 0) {
-            size_t chunk = min((size_t)avail, (size_t)EPD_IMAGE_BYTES - received);
-            stream->readBytes(buf + received, chunk);
-            received += chunk;
-        } else if (millis() - t0 > HTTP_TIMEOUT_MS) {
+            size_t want = min((size_t)avail,
+                              min(sizeof(chunk), (size_t)EPD_IMAGE_BYTES - received));
+            size_t got  = stream->readBytes(chunk, want);
+            for (size_t i = 0; i < got; ++i) epd_spi_byte(chunk[i]);
+            received += got;
+            t_last = millis();
+        } else if (millis() - t_last > HTTP_TIMEOUT_MS) {
+            digitalWrite(EPD_CS, HIGH);
             blink(LED_RED, 6, 100, 100);  // stream timeout
-            http.end(); free(buf);
+            http.end();
             return false;
         } else {
             delay(1);
         }
     }
+
+    digitalWrite(EPD_CS, HIGH);
     http.end();
 
-    // Green on during EPD refresh (~30s)
+    // ── Trigger display refresh ───────────────────────────────────────────────
     digitalWrite(LED_GREEN, HIGH);
-    epd_init();
-    epd_show(buf, EPD_IMAGE_BYTES);
+    epd_refresh();
     digitalWrite(LED_GREEN, LOW);
 
-    free(buf);
     return true;
 }
 
@@ -234,14 +223,18 @@ static bool poll_server() {
 void setup() {
     leds_init();
     pmic_init();
-    blink(LED_GREEN, 2);  // boot OK
+
+    // Startup display test — solid yellow proves EPD pipeline before WiFi runs
+    // Screen turns yellow: display OK. Screen unchanged: EPD/PMIC issue.
+    blink(LED_GREEN, 1);
+    epd_fill(0x22);   // 0x22 = yellow both pixels per byte
+    blink(LED_GREEN, 2);
 }
 
 void loop() {
-    // WiFi: red on while connecting
-    digitalWrite(LED_RED, HIGH);
+    digitalWrite(LED_RED, HIGH);  // red on = WiFi connecting
     if (!wifi_connect()) {
-        blink(LED_RED, 5, 400, 400);  // WiFi failed
+        blink(LED_RED, 5, 400, 400);
         if (!DEBUG_NO_SLEEP) {
             esp_sleep_enable_timer_wakeup((uint64_t)s_poll_interval * 1000000ULL);
             esp_deep_sleep_start();
@@ -250,7 +243,7 @@ void loop() {
         return;
     }
     digitalWrite(LED_RED, LOW);
-    blink(LED_GREEN, 1);  // WiFi connected
+    blink(LED_GREEN, 1);  // green blink = WiFi connected
 
     poll_server();
 
