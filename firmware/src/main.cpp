@@ -17,38 +17,45 @@ RTC_DATA_ATTR static char     s_etag[128]     = "";
 RTC_DATA_ATTR static uint32_t s_poll_interval = DEFAULT_POLL_INTERVAL_SEC;
 
 // ── LED helpers ───────────────────────────────────────────────────────────────
-// Red  — PWM via analogWrite: dim at idle, full during active work / errors.
-// Green — digital only: off at idle, brief blink on errors.
-#define RED_IDLE_DUTY  6    // ~2 % duty — barely-visible heartbeat
-#define RED_FULL_DUTY  255  // 100 % during active operations / error blinks
+// Both LEDs are ACTIVE-LOW: GPIO HIGH = off, GPIO LOW = on.
+// Red  — PWM via analogWrite (inverted: high duty = mostly off = dim).
+// Green — digital only: HIGH = off, LOW = on (errors only).
+//
+// analogWrite duty for active-low red:
+//   255 → always HIGH → LED off
+//   249 → HIGH 97.6 %, LOW 2.4 % → barely-visible heartbeat
+//     0 → always LOW  → LED fully on
+#define RED_OFF_DUTY   255   // LED off
+#define RED_IDLE_DUTY  249   // ~2 % on — barely-visible heartbeat
+#define RED_FULL_DUTY  0     // LED fully on
 
 static void leds_init() {
     pinMode(LED_GREEN, OUTPUT);
-    digitalWrite(LED_GREEN, LOW);
+    digitalWrite(LED_GREEN, HIGH);      // HIGH = off (active-low)
     pinMode(LED_RED, OUTPUT);
-    analogWrite(LED_RED, 0);   // initialise PWM channel, start off
+    analogWrite(LED_RED, RED_OFF_DUTY); // start fully off
 }
 // Between polls: dim red heartbeat, green off.
 static void leds_idle() {
     analogWrite(LED_RED, RED_IDLE_DUTY);
-    digitalWrite(LED_GREEN, LOW);
+    digitalWrite(LED_GREEN, HIGH);      // HIGH = off
 }
 // During WiFi, HTTP transfer, and EPD refresh: full red, green off.
 static void leds_active() {
     analogWrite(LED_RED, RED_FULL_DUTY);
-    digitalWrite(LED_GREEN, LOW);
+    digitalWrite(LED_GREEN, HIGH);      // HIGH = off
 }
 // Error blinks (LED_RED or LED_GREEN); returns to idle when done.
 static void blink(int pin, int times, int on_ms = 150, int off_ms = 150) {
     for (int i = 0; i < times; ++i) {
-        if (pin == LED_RED) analogWrite(LED_RED, RED_FULL_DUTY);
-        else                digitalWrite(pin, HIGH);
+        if (pin == LED_RED) analogWrite(LED_RED, RED_FULL_DUTY); // 0 = fully on
+        else                digitalWrite(pin, LOW);               // LOW = on
         delay(on_ms);
-        if (pin == LED_RED) analogWrite(LED_RED, 0);
-        else                digitalWrite(pin, LOW);
+        if (pin == LED_RED) analogWrite(LED_RED, RED_OFF_DUTY);  // 255 = off
+        else                digitalWrite(pin, HIGH);              // HIGH = off
         delay(off_ms);
     }
-    leds_idle();  // return to dim-red idle after any blink sequence
+    leds_idle();
 }
 
 // ── EPD SPI (bit-banged) ──────────────────────────────────────────────────────
