@@ -1,5 +1,5 @@
 use sha2::{Sha256, Digest};
-use crate::font::draw_text;
+use crate::font::{draw_text, measure_text};
 use crate::image::{E6Canvas, E6Color, SCREEN_W, SCREEN_H};
 use crate::modules::{Module, Rect};
 
@@ -19,16 +19,14 @@ pub fn render(
         module.render(&mut canvas, *region);
     }
 
-    // Version bar — two lines at the bottom, 4% of screen height
+    // Version bar — single right-justified line at the bottom, 4% of screen height
     const SIZE_PX: f32 = 19.2;
     const LINE_H:  i32 = 20;
     const MARGIN:  i32 = 8;
-    const GAP:     i32 = 4;
-    let line2_y = SCREEN_H - MARGIN - LINE_H;
-    let line1_y = line2_y - GAP - LINE_H;
-
-    draw_text(&mut canvas, MARGIN, line1_y, &format!("SV: {server_ver}"), SIZE_PX, E6Color::Black, false);
-    draw_text(&mut canvas, MARGIN, line2_y, &format!("FW: {fw_ver}"),     SIZE_PX, E6Color::Black, false);
+    let line_y   = SCREEN_H - MARGIN - LINE_H;
+    let ver_text = format!("SV: {server_ver}   FW: {fw_ver}");
+    let (ver_w, _) = measure_text(&ver_text, SIZE_PX, false);
+    draw_text(&mut canvas, SCREEN_W - MARGIN - ver_w, line_y, &ver_text, SIZE_PX, E6Color::Black, false);
 
     let packed = canvas.pack();
     let etag   = hex::encode(Sha256::digest(&packed));

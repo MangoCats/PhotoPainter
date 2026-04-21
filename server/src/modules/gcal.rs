@@ -10,7 +10,7 @@ const SIZE_PX:  f32 = 28.0;
 const MARGIN:   i32 = 8;
 const LINE_GAP: i32 = 4;
 const Y_START:  i32 = 145;  // below clock + max rain block
-const Y_END:    i32 = 424;  // above version bar
+const Y_END:    i32 = 448;  // above single-line version bar (y≈452)
 
 struct TokenCache {
     token:      String,
@@ -169,18 +169,37 @@ impl Module for GCalModule {
         let max_y   = region.y + Y_END;
         let mut y   = region.y + Y_START;
 
-        let lines: Vec<String> = if events.is_empty() {
-            vec!["No events today.".to_string()]
-        } else {
-            events.iter()
-                .map(|e| format!("{}  {}", e.start_display, e.summary))
-                .collect()
-        };
+        if events.is_empty() {
+            if y + ascent <= max_y {
+                canvas.fill_rect(0, y, SCREEN_W, line_h, E6Color::Black);
+                draw_text(canvas, region.x + MARGIN, y, "No events today.", SIZE_PX, E6Color::White, false);
+            }
+            return;
+        }
 
-        for text in &lines {
+        let now = Local::now();
+        let current_minutes = now.hour() as i32 * 60 + now.minute() as i32;
+        let mut found_next  = false;
+
+        for event in &events {
             if y + ascent > max_y { break; }
-            canvas.fill_rect(0, y, SCREEN_W, line_h, E6Color::Black);
-            draw_text(canvas, region.x + MARGIN, y, text, SIZE_PX, E6Color::White, false);
+
+            // Color scheme:
+            //   all-day (sort_key = -1) or past timed → white on black
+            //   next upcoming timed event             → yellow on blue
+            //   further upcoming timed events         → white on blue
+            let (text_color, bg_color) = if event.sort_key < 0 || event.sort_key < current_minutes {
+                (E6Color::White, E6Color::Black)
+            } else if !found_next {
+                found_next = true;
+                (E6Color::Yellow, E6Color::Blue)
+            } else {
+                (E6Color::White, E6Color::Blue)
+            };
+
+            let text = format!("{}  {}", event.start_display, event.summary);
+            canvas.fill_rect(0, y, SCREEN_W, line_h, bg_color);
+            draw_text(canvas, region.x + MARGIN, y, &text, SIZE_PX, text_color, false);
             y += line_h;
         }
     }
