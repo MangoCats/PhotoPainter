@@ -21,16 +21,16 @@ pub fn render(
         module.render(&mut canvas, *region);
     }
 
-    // Version bar — two lines at the bottom, scale-6 font (42 px tall ≈ 9% of 480)
-    const SCALE:  i32 = 6;
-    const MARGIN: i32 = 8;
-    const LINE_H: i32 = 7 * SCALE; // 42 px
-    const GAP:    i32 = 4;
+    // Version bar — two lines at the bottom, ~42 px em (≈ 9% of 480)
+    const SIZE_PX: f32 = 42.0;
+    const LINE_H:  i32 = 42;
+    const MARGIN:  i32 = 8;
+    const GAP:     i32 = 4;
     let line2_y = SCREEN_H - MARGIN - LINE_H;       // 430
     let line1_y = line2_y - GAP - LINE_H;           // 384
 
-    draw_text(&mut canvas, MARGIN, line1_y, &format!("SV: {server_ver}"), SCALE, E6Color::Black);
-    draw_text(&mut canvas, MARGIN, line2_y, &format!("FW: {fw_ver}"),     SCALE, E6Color::Black);
+    draw_text(&mut canvas, MARGIN, line1_y, &format!("SV: {server_ver}"), SIZE_PX, E6Color::Black);
+    draw_text(&mut canvas, MARGIN, line2_y, &format!("FW: {fw_ver}"),     SIZE_PX, E6Color::Black);
 
     let packed = canvas.pack();
     let etag   = hex::encode(Sha256::digest(&packed));
