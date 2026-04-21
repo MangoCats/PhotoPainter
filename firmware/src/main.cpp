@@ -184,10 +184,10 @@ static bool poll_server() {
 
     int content_len = http.getSize();
     if (content_len != EPD_IMAGE_BYTES) {
-        // Wrong size: red + green alternate 5x
+        // Wrong size: both LEDs on together 5x slow (distinct from error blinks)
         for (int i = 0; i < 5; ++i) {
-            digitalWrite(LED_RED, HIGH); delay(200); digitalWrite(LED_RED, LOW);
-            digitalWrite(LED_GREEN, HIGH); delay(200); digitalWrite(LED_GREEN, LOW);
+            digitalWrite(LED_RED, HIGH); digitalWrite(LED_GREEN, HIGH); delay(600);
+            digitalWrite(LED_RED, LOW);  digitalWrite(LED_GREEN, LOW);  delay(400);
         }
         http.end();
         return false;

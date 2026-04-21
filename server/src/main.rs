@@ -56,10 +56,6 @@ async fn get_image(
         header::CONTENT_TYPE,
         HeaderValue::from_static("application/octet-stream"),
     );
-    headers.insert(
-        header::CONTENT_LENGTH,
-        HeaderValue::from_str(&image.packed.len().to_string()).unwrap(),
-    );
 
     (StatusCode::OK, headers, image.packed.clone()).into_response()
 }
