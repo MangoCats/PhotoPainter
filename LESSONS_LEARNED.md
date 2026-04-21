@@ -189,6 +189,94 @@ Valid color values for this panel: **0x0, 0x1, 0x2, 0x3, 0x5, 0x6**.
 
 ---
 
+## PlatformIO Project Layout
+
+PlatformIO requires `platformio.ini` at the **VS Code workspace root**. If the firmware lives in a subdirectory (`firmware/`), point the root ini at it with:
+
+```ini
+[platformio]
+src_dir     = firmware/src
+include_dir = firmware/include
+```
+
+Do **not** keep a second `platformio.ini` inside the subdirectory — PlatformIO will pick up the root one and the subdirectory one will be ignored, but having both causes confusion.
+
+---
+
+## ARDUINO_USB_MODE Redefinition Warning
+
+The ESP32 Arduino core already defines `ARDUINO_USB_MODE`. Overriding it in `build_flags` produces a harmless but noisy warning. Suppress it cleanly with:
+
+```ini
+build_unflags = -DARDUINO_USB_MODE
+build_flags   = -DARDUINO_USB_MODE=0 ...
+```
+
+---
+
+## USB CDC Serial Output Is Unreliable for Early Boot Debugging
+
+With `ARDUINO_USB_MODE=0` (HWCDC) or `ARDUINO_USB_MODE=1` (TinyUSB), `Serial.println()` silently discards data if the host has not fully opened the CDC port. Because the ESP32-S3 boots fast, the serial monitor almost never connects in time to catch early output.
+
+**Workaround:** use onboard LEDs (GPIO45 = red, GPIO42 = green) with distinct blink codes for each failure stage. This is reliable from the very first instruction and requires no host connection.
+
+---
+
+## Image Buffer: Stream Directly to EPD — Do Not Use ps_malloc
+
+The natural approach of allocating a 192 KB buffer with `ps_malloc(192000)`, filling it from the HTTP stream, then writing it to the EPD **fails silently**. `ps_malloc` returns `NULL` when PSRAM is not reliably powered (which can happen when the AXP2101 ALDO rails are not fully enabled, particularly during USB-only operation without a battery).
+
+**Fix:** stream the HTTP response body directly to the EPD SPI port in small stack-allocated chunks. The EPD pixel data register (command `0x10`) accepts an unlimited continuous write — no buffering required.
+
+```cpp
+epd_init();
+epd_cmd(0x10);
+digitalWrite(EPD_DC, HIGH);
+digitalWrite(EPD_CS, LOW);
+
+uint8_t chunk[256];
+size_t received = 0;
+while (received < EPD_IMAGE_BYTES) {
+    int avail = stream->available();
+    if (avail > 0) {
+        size_t got = stream->readBytes(chunk, min((size_t)avail, sizeof(chunk)));
+        for (size_t i = 0; i < got; ++i) epd_spi_byte(chunk[i]);
+        received += got;
+    }
+}
+digitalWrite(EPD_CS, HIGH);
+// then trigger refresh normally
+```
+
+This eliminates the PSRAM dependency for the image transfer entirely.
+
+---
+
+## Debugging Sequence That Worked
+
+When serial output is unavailable, the following sequence isolated the problem:
+
+1. **LED blink diagnostic sketch** (no WiFi, no HTTP, just blink codes) confirmed the board powers on and LEDs work.
+2. **WiFi + HTTP diagnostic sketch** (no EPD) confirmed WiFi connects and the server returns HTTP 200.
+3. **Startup EPD fill** (solid color before WiFi, no ps_malloc) confirmed the EPD pipeline works independently of the network.
+4. All three working → the fault was isolated to the post-HTTP buffer allocation (`ps_malloc`).
+
+---
+
+## axum Server: Do Not Set Content-Length Manually
+
+When returning a `Vec<u8>` body from an axum handler, axum (via hyper) sets `Content-Length` automatically. Setting it manually as well produces duplicate headers. The ESP32 `HTTPClient::getSize()` may return `-1` when it encounters duplicate `Content-Length` headers, causing a size-mismatch check to abort the transfer.
+
+**Fix:** omit the manual `Content-Length` insert and let axum set it.
+
+---
+
+## tower-http TraceLayer Logs at DEBUG, Not INFO
+
+`TraceLayer::new_for_http()` emits request/response logs at the `DEBUG` tracing level. Running with `RUST_LOG=info` suppresses them. Either use `RUST_LOG=debug` or add explicit `tracing::info!()` calls in the handler for always-visible request logging.
+
+---
+
 ## Pixel Data Format
 
 4 bits per pixel, 2 pixels per byte. High nibble = left pixel, low nibble = right pixel.
