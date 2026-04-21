@@ -39,10 +39,3 @@ pub fn render(
 pub fn full_screen() -> Rect {
     Rect { x: 0, y: 0, width: SCREEN_W, height: SCREEN_H }
 }
-
-/// Region for the weather module: below the timestamp line, above the version bar.
-pub fn weather_region() -> Rect {
-    // y=32: clears the 24 px timestamp (y=8) plus a small gap
-    // height=352: leaves 96 px for the two-line version bar at the bottom
-    Rect { x: 0, y: 32, width: SCREEN_W, height: 352 }
-}
