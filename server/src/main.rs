@@ -16,37 +16,113 @@ use axum::{
 };
 use tokio::sync::RwLock;
 use tracing_subscriber::{fmt, EnvFilter};
+use chrono::{DateTime, Local};
 
 use modules::clock::ClockModule;
-use modules::weather::WeatherModule;
+use modules::weather::{WeatherModule, WeatherData};
 use renderer::{render, full_screen, RenderedImage};
 
 const SERVER_VERSION: &str = env!("GIT_VERSION");
 
+// ── Significant-change tracking ───────────────────────────────────────────────
+
+/// Values as they appeared at the most recent screen refresh.
+struct DisplayedState {
+    refresh_time:   DateTime<Local>,
+    current_temp_f: i32,
+    high_f:         i32,
+    low_f:          i32,
+}
+
+/// Returns true if any data element has changed enough to warrant a repaint.
+fn is_significant_change(
+    displayed: &DisplayedState,
+    weather:   Option<WeatherData>,
+    now:       DateTime<Local>,
+) -> bool {
+    // Time: more than one hour since last refresh
+    if now.signed_duration_since(displayed.refresh_time).num_minutes() > 60 {
+        return true;
+    }
+    if let Some(w) = weather {
+        // Current temperature: two or more degrees
+        if (w.current_f - displayed.current_temp_f).abs() >= 2 { return true; }
+        // Forecast high or low: three or more degrees
+        if (w.high_f - displayed.high_f).abs() >= 3 { return true; }
+        if (w.low_f  - displayed.low_f).abs()  >= 3 { return true; }
+    }
+    false
+}
+
+// ── Shared state ──────────────────────────────────────────────────────────────
+
 struct AppState {
-    image:      RwLock<RenderedImage>,
+    image:     RwLock<RenderedImage>,
     fw_version: RwLock<String>,
-    weather:    WeatherModule,
+    weather:   WeatherModule,
+    displayed: RwLock<Option<DisplayedState>>,
 }
 type SharedState = Arc<AppState>;
 
+/// Commit a fresh render to `state.displayed`, preserving last-known temp values
+/// if weather data was not available at render time.
+async fn commit_displayed(state: &AppState, now: DateTime<Local>, weather: Option<WeatherData>) {
+    let mut guard = state.displayed.write().await;
+    let prev = guard.as_ref();
+    *guard = Some(DisplayedState {
+        refresh_time:   now,
+        current_temp_f: weather.map(|w| w.current_f)
+            .or_else(|| prev.map(|d| d.current_temp_f))
+            .unwrap_or(0),
+        high_f: weather.map(|w| w.high_f)
+            .or_else(|| prev.map(|d| d.high_f))
+            .unwrap_or(0),
+        low_f: weather.map(|w| w.low_f)
+            .or_else(|| prev.map(|d| d.low_f))
+            .unwrap_or(0),
+    });
+}
+
 // ── Background render task ────────────────────────────────────────────────────
+
 async fn render_loop(state: SharedState) {
     let clock = ClockModule;
     loop {
         state.weather.refresh().await;
-        let fw_ver = state.fw_version.read().await.clone();
-        let image = render(
-            &[(&clock, full_screen()), (&state.weather, full_screen())],
-            SERVER_VERSION,
-            &fw_ver,
-        );
-        *state.image.write().await = image;
+        let now     = Local::now();
+        let weather = state.weather.peek();
+
+        let should_render = {
+            let ds = state.displayed.read().await;
+            match ds.as_ref() {
+                None     => true,   // never rendered yet
+                Some(ds) => is_significant_change(ds, weather, now),
+            }
+        };
+
+        if should_render {
+            let fw_ver = state.fw_version.read().await.clone();
+            let image  = render(
+                &[(&clock, full_screen()), (&state.weather, full_screen())],
+                SERVER_VERSION,
+                &fw_ver,
+            );
+            *state.image.write().await = image;
+            commit_displayed(&state, now, weather).await;
+            tracing::info!(
+                current = weather.map(|w| w.current_f).unwrap_or(0),
+                high    = weather.map(|w| w.high_f).unwrap_or(0),
+                low     = weather.map(|w| w.low_f).unwrap_or(0),
+                "screen refreshed"
+            );
+        }
+
         tokio::time::sleep(Duration::from_secs(60)).await;
     }
 }
 
 // ── GET /api/image ────────────────────────────────────────────────────────────
+
 async fn get_image(
     State(state): State<SharedState>,
     req: Request<axum::body::Body>,
@@ -57,7 +133,7 @@ async fn get_image(
         .unwrap_or("unknown")
         .to_string();
 
-    // Re-render immediately if firmware version has changed
+    // Firmware version change is always a significant change — re-render immediately
     if let Some(new_fw) = req.headers()
         .get("x-firmware-version")
         .and_then(|v| v.to_str().ok())
@@ -68,17 +144,20 @@ async fn get_image(
             *fw = new_fw.to_string();
             let fw_str = fw.clone();
             drop(fw);
-            let clock = ClockModule;
+            let clock   = ClockModule;
+            let now     = Local::now();
+            let weather = state.weather.peek();
             let new_image = render(
                 &[(&clock, full_screen()), (&state.weather, full_screen())],
                 SERVER_VERSION,
                 &fw_str,
             );
             *state.image.write().await = new_image;
+            commit_displayed(&state, now, weather).await;
         }
     }
 
-    let image = state.image.read().await;
+    let image      = state.image.read().await;
     let etag_value = format!("\"{}\"", image.etag);
 
     let client_etag = req
@@ -111,6 +190,7 @@ fn add_common_headers(headers: &mut HeaderMap, etag: &str, poll_secs: u64) {
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
+
 #[tokio::main]
 async fn main() {
     fmt().with_env_filter(EnvFilter::from_default_env()).init();
@@ -122,6 +202,7 @@ async fn main() {
         image:      RwLock::new(initial),
         fw_version: RwLock::new("unknown".to_string()),
         weather,
+        displayed:  RwLock::new(None),  // forces a render on first loop iteration
     });
 
     tokio::spawn(render_loop(Arc::clone(&state)));

@@ -11,10 +11,10 @@ const MARGIN:          i32 = 16;
 const HL_ROW_GAP:      i32 = 8;
 
 #[derive(Default, Clone, Copy)]
-struct WeatherData {
-    current_f: i32,
-    high_f:    i32,
-    low_f:     i32,
+pub struct WeatherData {
+    pub current_f: i32,
+    pub high_f:    i32,
+    pub low_f:     i32,
 }
 
 struct CachedUrls {
@@ -36,6 +36,11 @@ impl WeatherModule {
             .build()
             .expect("failed to build HTTP client");
         Self { data: Mutex::new(None), urls: Mutex::new(None), client }
+    }
+
+    /// Returns the most recently fetched weather values, or `None` if no fetch has succeeded yet.
+    pub fn peek(&self) -> Option<WeatherData> {
+        *self.data.lock().unwrap()
     }
 
     pub async fn refresh(&self) {
