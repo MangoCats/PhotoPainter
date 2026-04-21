@@ -2,6 +2,7 @@ use std::time::Duration;
 use crate::image::E6Canvas;
 
 pub mod clock;
+pub mod gcal;
 pub mod rain;
 pub mod weather;
 
