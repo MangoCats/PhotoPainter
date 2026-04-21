@@ -17,21 +17,38 @@ RTC_DATA_ATTR static char     s_etag[128]     = "";
 RTC_DATA_ATTR static uint32_t s_poll_interval = DEFAULT_POLL_INTERVAL_SEC;
 
 // ── LED helpers ───────────────────────────────────────────────────────────────
-static void leds_off() {
-    digitalWrite(LED_RED,   LOW);
+// Red  — PWM via analogWrite: dim at idle, full during active work / errors.
+// Green — digital only: off at idle, brief blink on errors.
+#define RED_IDLE_DUTY  6    // ~2 % duty — barely-visible heartbeat
+#define RED_FULL_DUTY  255  // 100 % during active operations / error blinks
+
+static void leds_init() {
+    pinMode(LED_GREEN, OUTPUT);
+    digitalWrite(LED_GREEN, LOW);
+    pinMode(LED_RED, OUTPUT);
+    analogWrite(LED_RED, 0);   // initialise PWM channel, start off
+}
+// Between polls: dim red heartbeat, green off.
+static void leds_idle() {
+    analogWrite(LED_RED, RED_IDLE_DUTY);
     digitalWrite(LED_GREEN, LOW);
 }
-static void leds_init() {
-    pinMode(LED_RED,   OUTPUT);
-    pinMode(LED_GREEN, OUTPUT);
-    leds_off();
+// During WiFi, HTTP transfer, and EPD refresh: full red, green off.
+static void leds_active() {
+    analogWrite(LED_RED, RED_FULL_DUTY);
+    digitalWrite(LED_GREEN, LOW);
 }
+// Error blinks (LED_RED or LED_GREEN); returns to idle when done.
 static void blink(int pin, int times, int on_ms = 150, int off_ms = 150) {
     for (int i = 0; i < times; ++i) {
-        digitalWrite(pin, HIGH); delay(on_ms);
-        digitalWrite(pin, LOW);  delay(off_ms);
+        if (pin == LED_RED) analogWrite(LED_RED, RED_FULL_DUTY);
+        else                digitalWrite(pin, HIGH);
+        delay(on_ms);
+        if (pin == LED_RED) analogWrite(LED_RED, 0);
+        else                digitalWrite(pin, LOW);
+        delay(off_ms);
     }
-    leds_off();  // ensure both off after any blink sequence
+    leds_idle();  // return to dim-red idle after any blink sequence
 }
 
 // ── EPD SPI (bit-banged) ──────────────────────────────────────────────────────
@@ -230,14 +247,14 @@ static bool poll_server() {
 void setup() {
     leds_init();
     pmic_init();
-    leds_off();   // pmic_init may activate charge LED — force off after
+    leds_idle();  // pmic_init may activate charge LED — force idle state after
 }
 
 void loop() {
-    leds_off();   // guarantee off at the top of every cycle
+    leds_active();  // full red: about to do WiFi + network work
 
     if (!wifi_connect()) {
-        blink(LED_RED, 5, 400, 400);
+        blink(LED_RED, 5, 400, 400);  // error → blink ends in leds_idle()
         if (!DEBUG_NO_SLEEP) {
             esp_sleep_enable_timer_wakeup((uint64_t)s_poll_interval * 1000000ULL);
             esp_deep_sleep_start();
@@ -250,7 +267,7 @@ void loop() {
 
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
-    leds_off();   // wifi teardown can re-assert GPIO state on some builds
+    leds_idle();    // work done — dim red until next poll
 
     if (!DEBUG_NO_SLEEP) {
         esp_sleep_enable_timer_wakeup((uint64_t)s_poll_interval * 1000000ULL);
