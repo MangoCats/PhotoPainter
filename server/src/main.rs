@@ -1,5 +1,6 @@
 mod font;
 mod image;
+mod location;
 mod modules;
 mod renderer;
 
@@ -17,13 +18,15 @@ use tokio::sync::RwLock;
 use tracing_subscriber::{fmt, EnvFilter};
 
 use modules::clock::ClockModule;
-use renderer::{render, full_screen, RenderedImage};
+use modules::weather::WeatherModule;
+use renderer::{render, full_screen, weather_region, RenderedImage};
 
 const SERVER_VERSION: &str = env!("GIT_VERSION");
 
 struct AppState {
     image:      RwLock<RenderedImage>,
     fw_version: RwLock<String>,
+    weather:    WeatherModule,
 }
 type SharedState = Arc<AppState>;
 
@@ -31,8 +34,13 @@ type SharedState = Arc<AppState>;
 async fn render_loop(state: SharedState) {
     let clock = ClockModule;
     loop {
+        state.weather.refresh().await;
         let fw_ver = state.fw_version.read().await.clone();
-        let image = render(&[(&clock, full_screen())], SERVER_VERSION, &fw_ver);
+        let image = render(
+            &[(&clock, full_screen()), (&state.weather, weather_region())],
+            SERVER_VERSION,
+            &fw_ver,
+        );
         *state.image.write().await = image;
         tokio::time::sleep(Duration::from_secs(60)).await;
     }
@@ -61,7 +69,11 @@ async fn get_image(
             let fw_str = fw.clone();
             drop(fw);
             let clock = ClockModule;
-            let new_image = render(&[(&clock, full_screen())], SERVER_VERSION, &fw_str);
+            let new_image = render(
+                &[(&clock, full_screen()), (&state.weather, weather_region())],
+                SERVER_VERSION,
+                &fw_str,
+            );
             *state.image.write().await = new_image;
         }
     }
@@ -103,11 +115,13 @@ fn add_common_headers(headers: &mut HeaderMap, etag: &str, poll_secs: u64) {
 async fn main() {
     fmt().with_env_filter(EnvFilter::from_default_env()).init();
 
-    let clock = ClockModule;
-    let initial = render(&[(&clock, full_screen())], SERVER_VERSION, "unknown");
+    let clock   = ClockModule;
+    let weather = WeatherModule::new();
+    let initial = render(&[(&clock, full_screen()), (&weather, weather_region())], SERVER_VERSION, "unknown");
     let state: SharedState = Arc::new(AppState {
         image:      RwLock::new(initial),
         fw_version: RwLock::new("unknown".to_string()),
+        weather,
     });
 
     tokio::spawn(render_loop(Arc::clone(&state)));

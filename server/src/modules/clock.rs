@@ -37,7 +37,7 @@ impl Module for ClockModule {
             if now.hour() < 12 { "AM" } else { "PM" },
         );
 
-        draw_text(canvas, region.x + MARGIN, region.y + MARGIN, &text, SIZE_PX, E6Color::Black);
+        draw_text(canvas, region.x + MARGIN, region.y + MARGIN, &text, SIZE_PX, E6Color::Black, false);
     }
 
     fn data_refresh_interval(&self) -> Duration {
