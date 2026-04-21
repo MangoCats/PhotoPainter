@@ -7,8 +7,7 @@ use super::{Module, Rect};
 
 const CURRENT_SIZE_PX: f32 = 96.0;  // 20% of 480
 const HL_SIZE_PX:      f32 = 43.0;  // ~9% of 480
-const MARGIN:          i32 = 24;
-const COL_GAP:         i32 = 32;
+const MARGIN:          i32 = 16;
 const HL_ROW_GAP:      i32 = 8;
 
 #[derive(Default, Clone, Copy)]
@@ -93,23 +92,37 @@ impl Module for WeatherModule {
         drop(guard);
 
         let cur_str  = format!("{}°", d.current_f);
-        let high_str = format!("H {}°", d.high_f);
-        let low_str  = format!("L {}°", d.low_f);
+        let high_str = format!("{}", d.high_f);
+        let low_str  = format!("{}", d.low_f);
 
-        let (cur_w,  cur_a)  = measure_text(&cur_str,  CURRENT_SIZE_PX, true);
-        let (_,      hl_a)   = measure_text(&high_str, HL_SIZE_PX,      false);
+        let (cur_w,  cur_a) = measure_text(&cur_str,  CURRENT_SIZE_PX, true);
+        let (high_w, hl_a)  = measure_text(&high_str, HL_SIZE_PX,      false);
+        let (low_w,  _)     = measure_text(&low_str,  HL_SIZE_PX,      false);
 
-        let center_y  = region.y + region.height / 2;
-        let cur_y     = center_y - cur_a / 2;
-        let hl_total  = hl_a * 2 + HL_ROW_GAP;
-        let hl_y      = center_y - hl_total / 2;
+        // Half a character-width at the H/L font size
+        let half_char = measure_text("0", HL_SIZE_PX, false).0 / 2;
 
-        let cur_x = region.x + MARGIN;
-        let hl_x  = cur_x + cur_w + COL_GAP;
+        // Right-align H/L numbers to the right margin; right-align each individually
+        let hl_right  = region.x + region.width - MARGIN;
+        let hl_col_w  = high_w.max(low_w);          // widest number sets the column
+        let hl_x_high = hl_right - high_w;           // right-align each number
+        let hl_x_low  = hl_right - low_w;
+        let hl_col_left = hl_right - hl_col_w;       // left edge of the column
 
-        draw_text(canvas, cur_x,  cur_y,              &cur_str,  CURRENT_SIZE_PX, E6Color::Green, true);
-        draw_text(canvas, hl_x,   hl_y,               &high_str, HL_SIZE_PX,      E6Color::Green, false);
-        draw_text(canvas, hl_x,   hl_y + hl_a + HL_ROW_GAP, &low_str,  HL_SIZE_PX, E6Color::Green, false);
+        // Current temp: ° right edge sits half_char to the left of the H/L column
+        let cur_x = hl_col_left - half_char - cur_w;
+
+        // Vertical: current temp and H/L pair share the same top anchor, each
+        // centred against the taller of the two, starting at the top margin
+        let hl_total = hl_a * 2 + HL_ROW_GAP;
+        let block_h  = cur_a.max(hl_total);
+        let top_y    = region.y + MARGIN;
+        let cur_y    = top_y + (block_h - cur_a)    / 2;
+        let hl_y     = top_y + (block_h - hl_total) / 2;
+
+        draw_text(canvas, cur_x,    cur_y,                  &cur_str,  CURRENT_SIZE_PX, E6Color::Green, true);
+        draw_text(canvas, hl_x_high, hl_y,                  &high_str, HL_SIZE_PX,      E6Color::Green, false);
+        draw_text(canvas, hl_x_low,  hl_y + hl_a + HL_ROW_GAP, &low_str, HL_SIZE_PX,  E6Color::Green, false);
     }
 
     fn data_refresh_interval(&self) -> Duration { Duration::from_secs(300) }

@@ -19,7 +19,7 @@ use tracing_subscriber::{fmt, EnvFilter};
 
 use modules::clock::ClockModule;
 use modules::weather::WeatherModule;
-use renderer::{render, full_screen, weather_region, RenderedImage};
+use renderer::{render, full_screen, RenderedImage};
 
 const SERVER_VERSION: &str = env!("GIT_VERSION");
 
@@ -37,7 +37,7 @@ async fn render_loop(state: SharedState) {
         state.weather.refresh().await;
         let fw_ver = state.fw_version.read().await.clone();
         let image = render(
-            &[(&clock, full_screen()), (&state.weather, weather_region())],
+            &[(&clock, full_screen()), (&state.weather, full_screen())],
             SERVER_VERSION,
             &fw_ver,
         );
@@ -70,7 +70,7 @@ async fn get_image(
             drop(fw);
             let clock = ClockModule;
             let new_image = render(
-                &[(&clock, full_screen()), (&state.weather, weather_region())],
+                &[(&clock, full_screen()), (&state.weather, full_screen())],
                 SERVER_VERSION,
                 &fw_str,
             );
@@ -117,7 +117,7 @@ async fn main() {
 
     let clock   = ClockModule;
     let weather = WeatherModule::new();
-    let initial = render(&[(&clock, full_screen()), (&weather, weather_region())], SERVER_VERSION, "unknown");
+    let initial = render(&[(&clock, full_screen()), (&weather, full_screen())], SERVER_VERSION, "unknown");
     let state: SharedState = Arc::new(AppState {
         image:      RwLock::new(initial),
         fw_version: RwLock::new("unknown".to_string()),
