@@ -19,9 +19,9 @@ pub fn render(
         module.render(&mut canvas, *region);
     }
 
-    // Version bar — two lines at the bottom, 42 px em
-    const SIZE_PX: f32 = 42.0;
-    const LINE_H:  i32 = 42;
+    // Version bar — two lines at the bottom, 4% of screen height
+    const SIZE_PX: f32 = 19.2;
+    const LINE_H:  i32 = 20;
     const MARGIN:  i32 = 8;
     const GAP:     i32 = 4;
     let line2_y = SCREEN_H - MARGIN - LINE_H;

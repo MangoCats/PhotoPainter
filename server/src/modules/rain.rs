@@ -11,6 +11,11 @@ const MARGIN:           i32 = 8;
 const LINE_GAP:         i32 = 4;
 const CLOCK_SIZE_PX:    i32 = 24;   // must match clock::SIZE_PX
 const CLOCK_MARGIN:     i32 = 8;    // must match clock::MARGIN
+// Maximum pixel width for rain text — keeps it left of the temperature block.
+// The weather temp display starts at ~x=533 for 2-digit temperatures; 500px
+// gives comfortable clearance while fitting the two common short messages
+// ("No rain forecast for 7 days." / "Currently raining X in/hr.") on one line.
+const RAIN_MAX_W:       i32 = 500;
 const HEAVY_THRESHOLD:  f32 = 0.30;
 const RAIN_THRESHOLD:   f64 = 0.001;
 const FORECAST_HOURS:   f64 = 168.0;
@@ -192,6 +197,29 @@ fn compute_forecast(rain_periods: Vec<(f64, f32)>) -> RainData {
     RainData { line1, line2, near }
 }
 
+/// Word-wrap `text` so no line exceeds `max_w` pixels at SIZE_PX.
+fn word_wrap(text: &str, max_w: i32) -> Vec<String> {
+    let mut lines  = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        let candidate = if current.is_empty() {
+            word.to_string()
+        } else {
+            format!("{current} {word}")
+        };
+        if measure_text(&candidate, SIZE_PX, false).0 <= max_w {
+            current = candidate;
+        } else {
+            if !current.is_empty() {
+                lines.push(std::mem::take(&mut current));
+            }
+            current = word.to_string();
+        }
+    }
+    if !current.is_empty() { lines.push(current); }
+    lines
+}
+
 impl Module for RainModule {
     fn render(&self, canvas: &mut E6Canvas, region: Rect) {
         let guard = self.data.lock().unwrap();
@@ -200,15 +228,21 @@ impl Module for RainModule {
         let line2 = d.line2.clone();
         drop(guard);
 
-        // Position below clock: top margin + clock ascent + small gap
         let clock_ascent = measure_text("A", CLOCK_SIZE_PX as f32, false).1;
-        let y = region.y + CLOCK_MARGIN + clock_ascent + LINE_GAP;
+        let rain_ascent  = measure_text("A", SIZE_PX, false).1;
+        let line_h       = rain_ascent + LINE_GAP;
 
-        draw_text(canvas, region.x + MARGIN, y, &line1, SIZE_PX, E6Color::Blue, false);
+        let mut y = region.y + CLOCK_MARGIN + clock_ascent + LINE_GAP;
 
+        for sub in word_wrap(&line1, RAIN_MAX_W) {
+            draw_text(canvas, region.x + MARGIN, y, &sub, SIZE_PX, E6Color::Blue, false);
+            y += line_h;
+        }
         if let Some(l2) = line2 {
-            let rain_ascent = measure_text("A", SIZE_PX, false).1;
-            draw_text(canvas, region.x + MARGIN, y + rain_ascent + LINE_GAP, &l2, SIZE_PX, E6Color::Blue, false);
+            for sub in word_wrap(&l2, RAIN_MAX_W) {
+                draw_text(canvas, region.x + MARGIN, y, &sub, SIZE_PX, E6Color::Blue, false);
+                y += line_h;
+            }
         }
     }
 
