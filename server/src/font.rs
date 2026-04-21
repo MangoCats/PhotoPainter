@@ -13,6 +13,19 @@ fn font() -> &'static fontdue::Font {
     })
 }
 
+/// Returns `(total_width, ascent)` for `text` at `size_px`.
+/// Use this to centre text before calling `draw_text`.
+pub fn measure_text(text: &str, size_px: f32) -> (i32, i32) {
+    let f = font();
+    let ascent = f.horizontal_line_metrics(size_px)
+        .map(|m| m.ascent as i32)
+        .unwrap_or((size_px * 0.8) as i32);
+    let width: i32 = text.chars()
+        .map(|ch| f.rasterize(ch, size_px).0.advance_width.round() as i32)
+        .sum();
+    (width, ascent)
+}
+
 /// Render `text` starting at pixel `(x, y)` (top of the line).
 /// `size_px` is the font em-size in pixels.  Pixels with coverage > 50% are drawn.
 pub fn draw_text(canvas: &mut E6Canvas, x: i32, y: i32, text: &str, size_px: f32, color: E6Color) {
