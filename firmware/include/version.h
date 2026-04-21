@@ -1,2 +1,2 @@
 #pragma once
-#define FIRMWARE_VERSION "a30ece7-dirty"
+#define FIRMWARE_VERSION "96fbde7-dirty"
