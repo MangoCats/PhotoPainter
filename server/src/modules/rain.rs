@@ -107,7 +107,11 @@ impl RainModule {
             if end_off <= 0.0 || start_off >= FORECAST_HOURS { continue; }
 
             let raw_val  = v["value"].as_f64().unwrap_or(0.0);
-            let inches   = if uom.contains(":m") { raw_val * 39.3701 } else { raw_val };
+            let inches   = match uom {
+                "wmoUnit:m"  => raw_val * 39.3701,
+                "wmoUnit:mm" => raw_val * 0.0393701,
+                _            => raw_val,  // assume inches
+            };
             let rate     = (inches / dur_hours) as f32;
 
             if (rate as f64) > RAIN_THRESHOLD {
