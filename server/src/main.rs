@@ -48,9 +48,17 @@ async fn get_image(
     let mut headers = HeaderMap::new();
     add_common_headers(&mut headers, &etag_value, 60);
 
+    let device_id = req.headers()
+        .get("x-device-id")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown");
+
     if client_etag == etag_value {
+        tracing::info!("GET /api/image → 304 (device: {device_id})");
         return (StatusCode::NOT_MODIFIED, headers, vec![]).into_response();
     }
+
+    tracing::info!("GET /api/image → 200 {} bytes (device: {device_id})", image.packed.len());
 
     headers.insert(
         header::CONTENT_TYPE,
