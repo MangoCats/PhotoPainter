@@ -4,6 +4,7 @@
 #include <sys/time.h>
 #include <XPowersLib.h>
 #include "config.h"
+#include "version.h"
 
 #define LED_RED    45
 #define LED_GREEN  42
@@ -16,15 +17,21 @@ RTC_DATA_ATTR static char     s_etag[128]     = "";
 RTC_DATA_ATTR static uint32_t s_poll_interval = DEFAULT_POLL_INTERVAL_SEC;
 
 // ── LED helpers ───────────────────────────────────────────────────────────────
+static void leds_off() {
+    digitalWrite(LED_RED,   LOW);
+    digitalWrite(LED_GREEN, LOW);
+}
 static void leds_init() {
-    pinMode(LED_RED,   OUTPUT); digitalWrite(LED_RED,   LOW);
-    pinMode(LED_GREEN, OUTPUT); digitalWrite(LED_GREEN, LOW);
+    pinMode(LED_RED,   OUTPUT);
+    pinMode(LED_GREEN, OUTPUT);
+    leds_off();
 }
 static void blink(int pin, int times, int on_ms = 150, int off_ms = 150) {
     for (int i = 0; i < times; ++i) {
         digitalWrite(pin, HIGH); delay(on_ms);
         digitalWrite(pin, LOW);  delay(off_ms);
     }
+    leds_off();  // ensure both off after any blink sequence
 }
 
 // ── EPD SPI (bit-banged) ──────────────────────────────────────────────────────
@@ -120,6 +127,8 @@ static void pmic_init() {
     pmu.setALDO4Voltage(3300); pmu.enableALDO4();
     pmu.setDC1Voltage(3300);   pmu.enableDC1();
     pmu.setVbusCurrentLimit(XPOWERS_AXP2101_VBUS_CUR_LIM_2000MA);
+    // Disable the PMIC's built-in charge LED — it shares the green LED circuit
+    pmu.setChargingLedMode(XPOWERS_CHG_LED_OFF);
 }
 
 // ── WiFi connect ──────────────────────────────────────────────────────────────
@@ -154,7 +163,8 @@ static bool poll_server() {
     http.begin(SERVER_URL);
     http.setTimeout(HTTP_TIMEOUT_MS);
     http.collectHeaders(kHeaders, 3);
-    http.addHeader("X-Device-ID", WiFi.macAddress());
+    http.addHeader("X-Device-ID",        WiFi.macAddress());
+    http.addHeader("X-Firmware-Version", FIRMWARE_VERSION);
     if (s_etag[0] != '\0') http.addHeader("If-None-Match", s_etag);
 
     int code = http.GET();
@@ -211,10 +221,7 @@ static bool poll_server() {
     digitalWrite(EPD_CS, HIGH);
     http.end();
 
-    // ── Trigger display refresh ───────────────────────────────────────────────
-    digitalWrite(LED_GREEN, HIGH);
     epd_refresh();
-    digitalWrite(LED_GREEN, LOW);
 
     return true;
 }
@@ -223,16 +230,12 @@ static bool poll_server() {
 void setup() {
     leds_init();
     pmic_init();
-
-    // Startup display test — solid yellow proves EPD pipeline before WiFi runs
-    // Screen turns yellow: display OK. Screen unchanged: EPD/PMIC issue.
-    blink(LED_GREEN, 1);
-    epd_fill(0x22);   // 0x22 = yellow both pixels per byte
-    blink(LED_GREEN, 2);
+    leds_off();   // pmic_init may activate charge LED — force off after
 }
 
 void loop() {
-    digitalWrite(LED_RED, HIGH);  // red on = WiFi connecting
+    leds_off();   // guarantee off at the top of every cycle
+
     if (!wifi_connect()) {
         blink(LED_RED, 5, 400, 400);
         if (!DEBUG_NO_SLEEP) {
@@ -242,13 +245,12 @@ void loop() {
         delay(s_poll_interval * 1000);
         return;
     }
-    digitalWrite(LED_RED, LOW);
-    blink(LED_GREEN, 1);  // green blink = WiFi connected
 
     poll_server();
 
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
+    leds_off();   // wifi teardown can re-assert GPIO state on some builds
 
     if (!DEBUG_NO_SLEEP) {
         esp_sleep_enable_timer_wakeup((uint64_t)s_poll_interval * 1000000ULL);
