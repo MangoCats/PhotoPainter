@@ -182,9 +182,10 @@ static bool poll_server() {
     String etag = http.header("ETag");
     if (!etag.isEmpty()) etag.toCharArray(s_etag, sizeof(s_etag));
 
+    // Content-Length is advisory only — stream exactly EPD_IMAGE_BYTES regardless
     int content_len = http.getSize();
-    if (content_len != EPD_IMAGE_BYTES) {
-        // Wrong size: both LEDs on together 5x slow (distinct from error blinks)
+    if (content_len > 0 && content_len != EPD_IMAGE_BYTES) {
+        // Server claims a size we don't expect — blink both together 5x then abort
         for (int i = 0; i < 5; ++i) {
             digitalWrite(LED_RED, HIGH); digitalWrite(LED_GREEN, HIGH); delay(600);
             digitalWrite(LED_RED, LOW);  digitalWrite(LED_GREEN, LOW);  delay(400);
