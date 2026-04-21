@@ -1,9 +1,7 @@
 use sha2::{Sha256, Digest};
 use crate::font::draw_text;
-use crate::image::{E6Canvas, E6Color, SCREEN_H};
+use crate::image::{E6Canvas, E6Color, SCREEN_W, SCREEN_H};
 use crate::modules::{Module, Rect};
-
-pub use crate::image::SCREEN_W;
 
 pub struct RenderedImage {
     pub packed: Vec<u8>,   // 192,000 bytes, 4bpp
@@ -21,24 +19,30 @@ pub fn render(
         module.render(&mut canvas, *region);
     }
 
-    // Version bar — two lines at the bottom, ~42 px em (≈ 9% of 480)
+    // Version bar — two lines at the bottom, 42 px em
     const SIZE_PX: f32 = 42.0;
     const LINE_H:  i32 = 42;
     const MARGIN:  i32 = 8;
     const GAP:     i32 = 4;
-    let line2_y = SCREEN_H - MARGIN - LINE_H;       // 430
-    let line1_y = line2_y - GAP - LINE_H;           // 384
+    let line2_y = SCREEN_H - MARGIN - LINE_H;
+    let line1_y = line2_y - GAP - LINE_H;
 
-    draw_text(&mut canvas, MARGIN, line1_y, &format!("SV: {server_ver}"), SIZE_PX, E6Color::Black);
-    draw_text(&mut canvas, MARGIN, line2_y, &format!("FW: {fw_ver}"),     SIZE_PX, E6Color::Black);
+    draw_text(&mut canvas, MARGIN, line1_y, &format!("SV: {server_ver}"), SIZE_PX, E6Color::Black, false);
+    draw_text(&mut canvas, MARGIN, line2_y, &format!("FW: {fw_ver}"),     SIZE_PX, E6Color::Black, false);
 
     let packed = canvas.pack();
     let etag   = hex::encode(Sha256::digest(&packed));
     RenderedImage { packed, etag }
 }
 
-/// Full-screen region covering the entire display.
+/// Full-screen region.
 pub fn full_screen() -> Rect {
-    use crate::image::SCREEN_W;
     Rect { x: 0, y: 0, width: SCREEN_W, height: SCREEN_H }
+}
+
+/// Region for the weather module: below the timestamp line, above the version bar.
+pub fn weather_region() -> Rect {
+    // y=32: clears the 24 px timestamp (y=8) plus a small gap
+    // height=352: leaves 96 px for the two-line version bar at the bottom
+    Rect { x: 0, y: 32, width: SCREEN_W, height: 352 }
 }

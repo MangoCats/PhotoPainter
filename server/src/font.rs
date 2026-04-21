@@ -1,22 +1,27 @@
-// Font file: download JetBrains Mono Regular and place at server/assets/JetBrainsMono-Regular.ttf
-// https://github.com/JetBrains/JetBrainsMono/releases  →  JetBrainsMono-*.zip  →  fonts/ttf/
+// Font files: server/assets/JetBrainsMono-{Regular,Bold}.ttf  (OFL 1.1)
+// https://github.com/JetBrains/JetBrainsMono/releases
 use std::sync::OnceLock;
 use crate::image::{E6Canvas, E6Color};
 
-static FONT_BYTES: &[u8] = include_bytes!("../assets/JetBrainsMono-Regular.ttf");
-static FONT: OnceLock<fontdue::Font> = OnceLock::new();
+static REGULAR_BYTES: &[u8] = include_bytes!("../assets/JetBrainsMono-Regular.ttf");
+static BOLD_BYTES:    &[u8] = include_bytes!("../assets/JetBrainsMono-Bold.ttf");
 
-fn font() -> &'static fontdue::Font {
-    FONT.get_or_init(|| {
-        fontdue::Font::from_bytes(FONT_BYTES, fontdue::FontSettings::default())
-            .expect("failed to load JetBrainsMono-Regular.ttf")
-    })
+static REGULAR: OnceLock<fontdue::Font> = OnceLock::new();
+static BOLD:    OnceLock<fontdue::Font> = OnceLock::new();
+
+fn get_font(bold: bool) -> &'static fontdue::Font {
+    if bold {
+        BOLD.get_or_init(|| fontdue::Font::from_bytes(BOLD_BYTES, fontdue::FontSettings::default())
+            .expect("failed to load JetBrainsMono-Bold.ttf"))
+    } else {
+        REGULAR.get_or_init(|| fontdue::Font::from_bytes(REGULAR_BYTES, fontdue::FontSettings::default())
+            .expect("failed to load JetBrainsMono-Regular.ttf"))
+    }
 }
 
-/// Returns `(total_width, ascent)` for `text` at `size_px`.
-/// Use this to centre text before calling `draw_text`.
-pub fn measure_text(text: &str, size_px: f32) -> (i32, i32) {
-    let f = font();
+/// Returns `(total_advance_width, ascent)` for `text` at `size_px`.
+pub fn measure_text(text: &str, size_px: f32, bold: bool) -> (i32, i32) {
+    let f = get_font(bold);
     let ascent = f.horizontal_line_metrics(size_px)
         .map(|m| m.ascent as i32)
         .unwrap_or((size_px * 0.8) as i32);
@@ -26,10 +31,10 @@ pub fn measure_text(text: &str, size_px: f32) -> (i32, i32) {
     (width, ascent)
 }
 
-/// Render `text` starting at pixel `(x, y)` (top of the line).
-/// `size_px` is the font em-size in pixels.  Pixels with coverage > 50% are drawn.
-pub fn draw_text(canvas: &mut E6Canvas, x: i32, y: i32, text: &str, size_px: f32, color: E6Color) {
-    let f = font();
+/// Render `text` at `(x, y)` where y is the top of the line.
+/// Pixels with >50% coverage are drawn at 1:1 scale.
+pub fn draw_text(canvas: &mut E6Canvas, x: i32, y: i32, text: &str, size_px: f32, color: E6Color, bold: bool) {
+    let f = get_font(bold);
     let baseline_y = y + f.horizontal_line_metrics(size_px)
         .map(|m| m.ascent as i32)
         .unwrap_or((size_px * 0.8) as i32);
