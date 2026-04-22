@@ -140,6 +140,11 @@ fn parse_duration_hours(s: &str) -> Option<f64> {
     Some(days * 24.0 + hours)
 }
 
+fn fmt_rate(rate: f32) -> String {
+    if rate < 1.0 { format!(".{:02}", (rate * 100.0).round() as u32) }
+    else          { format!("{:.1}", rate) }
+}
+
 fn category_name(rate: f32) -> &'static str {
     if rate < 0.10 { "Light" }
     else if rate < 0.30 { "Moderate" }
@@ -167,7 +172,7 @@ fn format_start(start_off_hours: f64) -> String {
     let mins  = (start_off_hours * 60.0).round() as i64;
 
     if mins < 91 {
-        return if mins == 1 { "1 minute".to_string() } else { format!("{mins} minutes") };
+        return if mins == 1 { "in 1 minute".to_string() } else { format!("in {mins} minutes") };
     }
 
     let today    = now.date_naive();
@@ -176,7 +181,7 @@ fn format_start(start_off_hours: f64) -> String {
     let shour    = start.hour();
 
     if sdate == today || (sdate == tomorrow && shour < 6) {
-        return format!("{:.1} hours", start_off_hours);
+        return format!("in {:.1} hours", start_off_hours);
     }
 
     let (_, h12) = start.hour12();
@@ -200,9 +205,9 @@ fn compute_forecast(rain_periods: Vec<(f64, f32)>) -> RainData {
     };
 
     let line1 = if first_start <= 0.0 {
-        format!("Raining {:.2} in/hr.", first_rate)
+        format!("Raining {} in/hr.", fmt_rate(first_rate))
     } else {
-        format!("{} {:.2} starting {}.", category_name(first_rate), first_rate, format_start(first_start))
+        format!("{} {} {}.", category_name(first_rate), fmt_rate(first_rate), format_start(first_start))
     };
 
     let near = if first_start <= 0.0 {
@@ -223,9 +228,9 @@ fn compute_forecast(rain_periods: Vec<(f64, f32)>) -> RainData {
         .find(|&&(start, rate)| category_rank(rate) > first_rank && start > first_start)
         .map(|&(start, rate)| {
             if start <= 0.0 {
-                format!("{} {:.2} in/hr now.", category_name(rate), rate)
+                format!("{} {} in/hr now.", category_name(rate), fmt_rate(rate))
             } else {
-                format!("{} {:.2} starting {}.", category_name(rate), rate, format_start(start))
+                format!("{} {} {}.", category_name(rate), fmt_rate(rate), format_start(start))
             }
         });
 
