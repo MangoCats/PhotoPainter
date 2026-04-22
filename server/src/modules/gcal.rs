@@ -10,7 +10,7 @@ const SIZE_PX:  f32 = 28.0;
 const MARGIN:   i32 = 8;
 const LINE_GAP: i32 = 4;
 const Y_START:  i32 = 145;  // below clock + max rain block
-const Y_END:    i32 = 448;  // above single-line version bar (y≈452)
+const Y_END:    i32 = 428;  // above stock strip (SCREEN_H=480, STRIP_H=48, gap=4)
 
 struct TokenCache {
     token:      String,

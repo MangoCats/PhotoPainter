@@ -4,6 +4,7 @@ use crate::image::E6Canvas;
 pub mod clock;
 pub mod gcal;
 pub mod rain;
+pub mod stock;
 pub mod weather;
 
 #[derive(Clone, Copy, Debug)]
