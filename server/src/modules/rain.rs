@@ -1,6 +1,6 @@
 use std::sync::Mutex;
 use std::time::Duration;
-use chrono::Utc;
+use chrono::{Utc, Local, Timelike};
 use crate::font::{draw_text, measure_text};
 use crate::image::{E6Canvas, E6Color};
 use crate::location;
@@ -12,11 +12,8 @@ const LINE_GAP:         i32 = 4;
 const CLOCK_SIZE_PX:    i32 = 24;   // must match clock::SIZE_PX
 const CLOCK_MARGIN:     i32 = 4;    // must match clock::MARGIN
 // Maximum pixel width for rain text — keeps it left of the temperature block.
-// The weather temp display starts at ~x=533 for 2-digit temperatures; 500px
-// gives comfortable clearance while fitting the two common short messages
-// ("No rain forecast for 7 days." / "Currently raining X in/hr.") on one line.
+// Weather temp display starts at ~x=489 for 3-digit temperatures (worst case).
 const RAIN_MAX_W:       i32 = 500;
-const HEAVY_THRESHOLD:  f32 = 0.30;
 const RAIN_THRESHOLD:   f64 = 0.001;
 const FORECAST_HOURS:   f64 = 168.0;
 const NEAR_TERM_HOURS:  f64 = 6.0;
@@ -143,32 +140,69 @@ fn parse_duration_hours(s: &str) -> Option<f64> {
     Some(days * 24.0 + hours)
 }
 
-fn format_duration(hours: f64) -> String {
-    if hours < 1.0 {
-        let mins = (hours * 60.0).round() as i32;
-        let mins = mins.max(1);
-        if mins == 1 { "1 minute".to_string() } else { format!("{mins} minutes") }
-    } else if hours < 48.0 {
-        format!("{:.1} hours", hours)
+fn category_name(rate: f32) -> &'static str {
+    if rate < 0.10 { "Light" }
+    else if rate < 0.30 { "Moderate" }
+    else if rate < 2.0  { "Heavy" }
+    else                 { "Extreme" }
+}
+
+fn category_rank(rate: f32) -> u8 {
+    if rate < 0.10 { 0 }
+    else if rate < 0.30 { 1 }
+    else if rate < 2.0  { 2 }
+    else                 { 3 }
+}
+
+/// Returns a human-readable start-time description for a rain period that
+/// begins `start_off_hours` hours from now (must be > 0).
+///
+/// < 91 min          → "N minutes"
+/// same calendar day or before 6 AM next morning → "N.N hours"
+/// tomorrow (≥ 6 AM) → "Tomorrow @ H:MMam"
+/// later             → "DayOfWeek @ H:MMam"
+fn format_start(start_off_hours: f64) -> String {
+    let now   = Local::now();
+    let start = now + chrono::Duration::seconds((start_off_hours * 3600.0).round() as i64);
+    let mins  = (start_off_hours * 60.0).round() as i64;
+
+    if mins < 91 {
+        return if mins == 1 { "1 minute".to_string() } else { format!("{mins} minutes") };
+    }
+
+    let today    = now.date_naive();
+    let tomorrow = today.succ_opt().unwrap_or(today);
+    let sdate    = start.date_naive();
+    let shour    = start.hour();
+
+    if sdate == today || (sdate == tomorrow && shour < 6) {
+        return format!("{:.1} hours", start_off_hours);
+    }
+
+    let (_, h12) = start.hour12();
+    let ampm     = if shour < 12 { "AM" } else { "PM" };
+    let time_str = format!("{h12}:{:02}{ampm}", start.minute());
+
+    if sdate == tomorrow {
+        format!("Tomorrow @ {time_str}")
     } else {
-        let days = (hours / 24.0).round() as i32;
-        if days == 1 { "1 day".to_string() } else { format!("{days} days") }
+        format!("{} @ {time_str}", start.format("%A"))
     }
 }
 
 fn compute_forecast(rain_periods: Vec<(f64, f32)>) -> RainData {
     let Some(&(first_start, first_rate)) = rain_periods.first() else {
         return RainData {
-            line1: "No rain forecast for 7 days.".to_string(),
+            line1: "No rain for 7 days.".to_string(),
             line2: None,
             near:  NearTermRain::None,
         };
     };
 
     let line1 = if first_start <= 0.0 {
-        format!("Currently raining {:.2} in/hr.", first_rate)
+        format!("Raining {:.2} in/hr.", first_rate)
     } else {
-        format!("{:.2} in/hr rain forecast to start in {}.", first_rate, format_duration(first_start))
+        format!("{} {:.2} starting {}.", category_name(first_rate), first_rate, format_start(first_start))
     };
 
     let near = if first_start <= 0.0 {
@@ -182,21 +216,18 @@ fn compute_forecast(rain_periods: Vec<(f64, f32)>) -> RainData {
         NearTermRain::None
     };
 
-    // Second line: heavy rain after lighter first rain
-    let line2 = if first_rate <= HEAVY_THRESHOLD {
-        rain_periods.iter()
-            .skip(1)
-            .find(|&&(start, rate)| rate > HEAVY_THRESHOLD && start > first_start)
-            .map(|&(heavy_start, heavy_rate)| {
-                if heavy_start <= 0.0 {
-                    format!("{:.2} in/hr heavy rain now.", heavy_rate)
-                } else {
-                    format!("{:.2} in/hr heavy rain in {}.", heavy_rate, format_duration(heavy_start))
-                }
-            })
-    } else {
-        None
-    };
+    // Second line: earliest period of a heavier category than the first
+    let first_rank = category_rank(first_rate);
+    let line2 = rain_periods.iter()
+        .skip(1)
+        .find(|&&(start, rate)| category_rank(rate) > first_rank && start > first_start)
+        .map(|&(start, rate)| {
+            if start <= 0.0 {
+                format!("{} {:.2} in/hr now.", category_name(rate), rate)
+            } else {
+                format!("{} {:.2} starting {}.", category_name(rate), rate, format_start(start))
+            }
+        });
 
     RainData { line1, line2, near }
 }
