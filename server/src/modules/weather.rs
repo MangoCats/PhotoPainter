@@ -7,7 +7,7 @@ use super::{Module, Rect};
 
 const CURRENT_SIZE_PX: f32 = 96.0;  // 20% of 480
 const HL_SIZE_PX:      f32 = 43.0;  // ~9% of 480
-const MARGIN:          i32 = 16;
+const MARGIN:          i32 = 8;
 const HL_ROW_GAP:      i32 = 8;
 
 #[derive(Default, Clone, Copy)]
@@ -124,6 +124,11 @@ impl Module for WeatherModule {
         let top_y    = region.y + MARGIN;
         let cur_y    = top_y + (block_h - cur_a)    / 2;
         let hl_y     = top_y + (block_h - hl_total) / 2;
+
+        // Erase any clock text that extends into the temperature region
+        let erase_x = cur_x.max(region.x);
+        let erase_w = (region.x + region.width) - erase_x;
+        canvas.fill_rect(erase_x, top_y, erase_w, block_h, E6Color::White);
 
         draw_text(canvas, cur_x,    cur_y,                  &cur_str,  CURRENT_SIZE_PX, E6Color::Green, true);
         draw_text(canvas, hl_x_high, hl_y,                  &high_str, HL_SIZE_PX,      E6Color::Green, false);
