@@ -40,6 +40,15 @@ impl E6Canvas {
         }
     }
 
+    /// Fill a disc (filled circle), clamping to canvas bounds.
+    pub fn fill_disc(&mut self, cx: i32, cy: i32, r: i32, color: E6Color) {
+        let r2 = r * r;
+        for dy in -r..=r {
+            let dx = (((r2 - dy * dy) as f64).sqrt()) as i32;
+            self.fill_rect(cx - dx, cy + dy, 2 * dx + 1, 1, color);
+        }
+    }
+
     /// Pack to 4bpp: high nibble = left pixel, low nibble = right pixel.
     /// Pixels are emitted in reverse order (180° rotation) to match physical
     /// display orientation.  Output length: SCREEN_W * SCREEN_H / 2 = 192,000 bytes.

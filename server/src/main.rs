@@ -144,7 +144,7 @@ async fn render_loop(state: SharedState) {
             let show_version = !*state.version_shown.read().await;
             let fw_ver = state.fw_version.read().await.clone();
             let image  = render(
-                &[(&clock, full_screen()), (&state.weather, full_screen()), (&state.rain, full_screen()), (&state.gcal, full_screen())],
+                &[(&clock, full_screen()), (&state.rain, full_screen()), (&state.weather, full_screen()), (&state.gcal, full_screen())],
                 SERVER_VERSION,
                 &fw_ver,
                 show_version,
@@ -196,7 +196,7 @@ async fn get_image(
             let near_rain = state.rain.peek_near();
             let show_version = !*state.version_shown.read().await;
             let new_image = render(
-                &[(&clock, full_screen()), (&state.weather, full_screen()), (&state.rain, full_screen()), (&state.gcal, full_screen())],
+                &[(&clock, full_screen()), (&state.rain, full_screen()), (&state.weather, full_screen()), (&state.gcal, full_screen())],
                 SERVER_VERSION,
                 &fw_str,
                 show_version,
@@ -257,7 +257,7 @@ async fn main() {
 
     // Initial render always shows the version bar (stock data not yet fetched)
     let initial = render(
-        &[(&clock, full_screen()), (&weather, full_screen()), (&rain, full_screen()), (&gcal, full_screen())],
+        &[(&clock, full_screen()), (&rain, full_screen()), (&weather, full_screen()), (&gcal, full_screen())],
         SERVER_VERSION,
         "unknown",
         true,
