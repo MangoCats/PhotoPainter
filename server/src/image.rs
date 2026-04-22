@@ -32,8 +32,9 @@ impl E6Canvas {
         if w <= 0 || h <= 0 { return; }
         let x0 = x.max(0) as usize;
         let y0 = y.max(0) as usize;
-        let x1 = (x + w).min(self.width  as i32) as usize;
-        let y1 = (y + h).min(self.height as i32) as usize;
+        let x1 = (x + w).min(self.width  as i32).max(0) as usize;
+        let y1 = (y + h).min(self.height as i32).max(0) as usize;
+        if x0 >= x1 || y0 >= y1 { return; }
         for row in y0..y1 {
             self.pixels[row * self.width + x0 .. row * self.width + x1]
                 .fill(color as u8);
