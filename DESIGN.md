@@ -58,11 +58,13 @@ GET /api/image HTTP/1.1
 Host: homeassistant.lan:7654
 X-Device-ID: e8:f6:0a:8f:03:6c
 X-Firmware-Version: <git-hash>
+X-Battery: pct=87, mv=3954, hrs=14.2, status=discharging
 If-None-Match: "<sha256-hex>"
 ```
 
 - `X-Device-ID`: device MAC address, used for logging.
 - `X-Firmware-Version`: firmware git hash. A change triggers an immediate server re-render.
+- `X-Battery`: battery status sampled once per wake cycle before HTTP. See [Battery Status Reporting](#battery-status-reporting) for field definitions, estimation algorithm, and omission rules.
 - `If-None-Match`: ETag from the last successful 200 response. Omitted on first boot or after a full reset (RTC memory cleared).
 
 ### Server Responses
@@ -159,11 +161,14 @@ Wake from deep sleep (or loop() iteration in DEBUG_NO_SLEEP mode)
 │
 ├─ leds_active()        — full red: about to do network work
 ├─ Init AXP2101         — enable all power rails at 3.3V
+│                         enable battery detection and voltage ADC channels
+├─ Sample battery       — getBatteryPercent(), getBattVoltage(), charge-state flags
+│                         compute hrs estimate if discharging; build X-Battery value
 ├─ Connect WiFi
 │   └─ Timeout 10 s → blink red ×5, sleep/delay poll_interval, return
 │
 ├─ HTTP GET /api/image
-│   ├─ Send X-Device-ID, X-Firmware-Version
+│   ├─ Send X-Device-ID, X-Firmware-Version, X-Battery
 │   ├─ Send If-None-Match (if ETag cached)
 │   ├─ Read X-Server-Time → sync RTC if delta > 30 s
 │   ├─ Read X-Poll-Interval → clamp [60, 3600] → store in RTC
@@ -186,6 +191,66 @@ Wake from deep sleep (or loop() iteration in DEBUG_NO_SLEEP mode)
 
 **Key implementation detail:** the HTTP body is streamed directly to the EPD over SPI as bytes arrive from the socket. No 192 KB frame buffer is allocated on the MCU. The EPD's internal buffer accumulates the data; the refresh command is sent only after all bytes have been written.
 
+### Battery Status Reporting
+
+The firmware must sample the AXP2101 PMIC once per wake cycle — after `pmic_init()` and before the HTTP request — and report the results in the `X-Battery` request header.
+
+#### Header Format
+
+```
+X-Battery: pct=<0–100>, mv=<millivolts>, hrs=<decimal>, status=<token>
+```
+
+All fields are always present except `hrs`, which is omitted when an estimate is not meaningful (see below). Field order is fixed; values are integers except `hrs` (one decimal place).
+
+| Field | Source | Description |
+|-------|--------|-------------|
+| `pct` | `getBatteryPercent()` | State of charge, 0–100. Reports `-1` when no battery is detected. |
+| `mv` | `getBattVoltage()` | Battery terminal voltage in millivolts. Reports `0` when no battery is detected. Both `enableBattDetection()` and `enableBattVoltageMeasure()` must be called during `pmic_init()` before this is valid. |
+| `hrs` | Computed (see below) | Estimated remaining hours on current charge. Omitted when `status` is `charging`, `standby`, or `no-battery`. |
+| `status` | Derived from PMIC flags | One of the tokens defined below. |
+
+#### Status Tokens
+
+| Token | Condition |
+|-------|-----------|
+| `charging` | `isCharging()` is true (USB present, battery charging) |
+| `discharging` | `isDischarge()` is true (running on battery) |
+| `standby` | `isStandby()` is true (USB present, battery full or charge paused) |
+| `no-battery` | `isBatteryConnect()` is false |
+
+These states are mutually exclusive. If the PMIC returns an unexpected combination, report the first matching token in the order listed above.
+
+#### Remaining-Life Estimation
+
+The `hrs` field is computed only when `status=discharging`:
+
+```
+hrs = (pct / 100.0) × BATTERY_CAPACITY_MAH / AVG_DISCHARGE_MA
+```
+
+Both constants must be defined in `config.h`:
+
+```c
+#define BATTERY_CAPACITY_MAH   2000u   // rated cell capacity in mAh
+#define AVG_DISCHARGE_MA          6u   // empirical average; see power budget
+```
+
+`AVG_DISCHARGE_MA` should reflect observed consumption at the configured poll interval (see Power Budget table). At a 60-second interval with infrequent display updates the baseline is ~5 mAh/hr; 6 mA is a reasonable starting conservative default. Users must calibrate this for their battery and usage pattern.
+
+**Accuracy caveats:** The AXP2101 fuel gauge (`getBatteryPercent()`) is coulomb-counter based and requires a full charge/discharge cycle to calibrate. The percent value is unreliable immediately after power-on or battery insertion. The `hrs` estimate additionally depends on `AVG_DISCHARGE_MA` being representative of actual load, which varies with display update frequency, WiFi signal strength, and temperature.
+
+#### Server Requirements
+
+The server must:
+1. Parse `X-Battery` from every incoming `GET /api/image` request.
+2. Log all four fields (or three when `hrs` is absent) at `INFO` level alongside the existing device-ID and response-code log entry.
+3. Make the parsed values available to future server features (e.g., low-battery display indicator) without requiring a protocol change.
+
+No display change is required at this time.
+
+---
+
 ### Configuration (`firmware/include/config.h`)
 
 ```c
@@ -197,6 +262,8 @@ Wake from deep sleep (or loop() iteration in DEBUG_NO_SLEEP mode)
 #define MAX_POLL_INTERVAL_SEC    3600u
 #define WIFI_CONNECT_TIMEOUT_MS  10000u
 #define HTTP_TIMEOUT_MS           8000u
+#define BATTERY_CAPACITY_MAH     2000u  // rated cell capacity; calibrate per battery
+#define AVG_DISCHARGE_MA            6u  // average load at configured poll interval
 ```
 
 Credentials are compile-time constants in `config.h`. There is no runtime provisioning.
@@ -423,6 +490,7 @@ These files must be created manually on each deployment. They are compiled direc
 | 8 | MCU frame buffer | None — HTTP body streamed directly to EPD over SPI |
 | 9 | Font library | `fontdue` (pure Rust, no system deps); `ab_glyph` was considered and rejected |
 | 10 | Layout config | Hardcoded per-module constants; no runtime config file for layout |
+| 11 | Battery reporting | Single `X-Battery` request header; always sends `pct` + `mv` + `status`; adds `hrs` estimate only when discharging; estimate uses compile-time capacity and average-current constants |
 
 ---
 
