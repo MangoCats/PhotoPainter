@@ -4,6 +4,7 @@ mod image;
 mod location;
 mod modules;
 mod renderer;
+mod stock_creds;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,6 +23,7 @@ use chrono::{DateTime, Local};
 use modules::clock::ClockModule;
 use modules::gcal::GCalModule;
 use modules::rain::{RainModule, NearTermRain};
+use modules::stock::StockModule;
 use modules::weather::{WeatherModule, WeatherData};
 use renderer::{render, full_screen, RenderedImage};
 
@@ -64,12 +66,15 @@ fn is_significant_change(
 // ── Shared state ──────────────────────────────────────────────────────────────
 
 struct AppState {
-    image:      RwLock<RenderedImage>,
-    fw_version: RwLock<String>,
-    weather:    WeatherModule,
-    rain:       RainModule,
-    gcal:       GCalModule,
-    displayed:  RwLock<Option<DisplayedState>>,
+    image:          RwLock<RenderedImage>,
+    fw_version:     RwLock<String>,
+    weather:        WeatherModule,
+    rain:           RainModule,
+    gcal:           GCalModule,
+    stock:          StockModule,
+    displayed:      RwLock<Option<DisplayedState>>,
+    /// True once the version bar has been shown; subsequent renders show the stock strip.
+    version_shown:  RwLock<bool>,
 }
 type SharedState = Arc<AppState>;
 
@@ -98,6 +103,22 @@ async fn commit_displayed(
     });
 }
 
+// ── Ticker config ─────────────────────────────────────────────────────────────
+
+fn load_tickers() -> Vec<String> {
+    match std::fs::read_to_string("stock_tickers.txt") {
+        Ok(content) => content
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .collect(),
+        Err(e) => {
+            eprintln!("could not read stock_tickers.txt: {e}");
+            Vec::new()
+        }
+    }
+}
+
 // ── Background render task ────────────────────────────────────────────────────
 
 async fn render_loop(state: SharedState) {
@@ -117,14 +138,23 @@ async fn render_loop(state: SharedState) {
         };
 
         if should_render {
+            // Fetch stock data only when a screen refresh is already happening
+            state.stock.refresh().await;
+
+            let show_version = !*state.version_shown.read().await;
             let fw_ver = state.fw_version.read().await.clone();
             let image  = render(
                 &[(&clock, full_screen()), (&state.weather, full_screen()), (&state.rain, full_screen()), (&state.gcal, full_screen())],
                 SERVER_VERSION,
                 &fw_ver,
+                show_version,
+                &state.stock,
             );
             *state.image.write().await = image;
             commit_displayed(&state, now, weather, near_rain).await;
+            if show_version {
+                *state.version_shown.write().await = true;
+            }
             tracing::info!(
                 current = weather.map(|w| w.current_f).unwrap_or(0),
                 high    = weather.map(|w| w.high_f).unwrap_or(0),
@@ -160,17 +190,23 @@ async fn get_image(
             *fw = new_fw.to_string();
             let fw_str = fw.clone();
             drop(fw);
-            let clock   = ClockModule;
-            let now     = Local::now();
-            let weather = state.weather.peek();
+            let clock     = ClockModule;
+            let now       = Local::now();
+            let weather   = state.weather.peek();
             let near_rain = state.rain.peek_near();
+            let show_version = !*state.version_shown.read().await;
             let new_image = render(
                 &[(&clock, full_screen()), (&state.weather, full_screen()), (&state.rain, full_screen()), (&state.gcal, full_screen())],
                 SERVER_VERSION,
                 &fw_str,
+                show_version,
+                &state.stock,
             );
             *state.image.write().await = new_image;
             commit_displayed(&state, now, weather, near_rain).await;
+            if show_version {
+                *state.version_shown.write().await = true;
+            }
         }
     }
 
@@ -212,18 +248,31 @@ fn add_common_headers(headers: &mut HeaderMap, etag: &str, poll_secs: u64) {
 async fn main() {
     fmt().with_env_filter(EnvFilter::from_default_env()).init();
 
+    let tickers = load_tickers();
     let clock   = ClockModule;
     let weather = WeatherModule::new();
     let rain    = RainModule::new();
     let gcal    = GCalModule::new();
-    let initial = render(&[(&clock, full_screen()), (&weather, full_screen()), (&rain, full_screen()), (&gcal, full_screen())], SERVER_VERSION, "unknown");
+    let stock   = StockModule::new(tickers);
+
+    // Initial render always shows the version bar (stock data not yet fetched)
+    let initial = render(
+        &[(&clock, full_screen()), (&weather, full_screen()), (&rain, full_screen()), (&gcal, full_screen())],
+        SERVER_VERSION,
+        "unknown",
+        true,
+        &stock,
+    );
+
     let state: SharedState = Arc::new(AppState {
-        image:      RwLock::new(initial),
-        fw_version: RwLock::new("unknown".to_string()),
+        image:         RwLock::new(initial),
+        fw_version:    RwLock::new("unknown".to_string()),
         weather,
         rain,
         gcal,
-        displayed:  RwLock::new(None),  // forces a render on first loop iteration
+        stock,
+        displayed:     RwLock::new(None),   // forces a render on first loop iteration
+        version_shown: RwLock::new(true),   // initial render already showed version bar
     });
 
     tokio::spawn(render_loop(Arc::clone(&state)));
