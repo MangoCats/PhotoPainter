@@ -6,7 +6,7 @@ Two independent projects share this repository:
 
 1. **`firmware/`** — ESP32-S3 firmware for the PhotoPainter device. Wakes from deep sleep, polls a local server for a new dashboard image, updates the e-paper display if the image has changed, then sleeps again for a server-specified interval.
 
-2. **`server/`** — Rust web server running on a local machine (PC, NAS, Raspberry Pi, etc.). Composes a multi-module dashboard image in the PhotoPainter's native 4bpp E6 format and serves it on demand. Starts with a digital clock; designed to add modules incrementally.
+2. **`server/`** — Rust web server running on a local machine (PC, NAS, Raspberry Pi, etc.). Composes a multi-module dashboard image in the PhotoPainter's native 4bpp E6 format and serves it on demand.
 
 ---
 
@@ -16,28 +16,33 @@ Two independent projects share this repository:
 PhotoPainter/
 ├── DESIGN.md                   ← this document
 ├── LESSONS_LEARNED.md          ← hardware bring-up findings
-├── scratch/                    ← existing bring-up/test sketches
+├── .gitignore                  ← excludes location.rs, gcal_creds.rs, stock_creds.rs
+├── scratch/                    ← bring-up and test sketches
+├── firmware/
 │   ├── platformio.ini
-│   └── src/main.cpp
-├── firmware/                   ← production ESP32-S3 firmware
-│   ├── platformio.ini
+│   ├── include/
+│   │   ├── config.h            ← WiFi credentials, server URL, poll timing, pin assignments
+│   │   └── version.h           ← firmware version string (set by build script)
 │   └── src/
 │       └── main.cpp
-└── server/                     ← Rust dashboard server
+└── server/
     ├── Cargo.toml
-    ├── config.toml             ← server configuration
+    ├── stock_tickers.txt       ← editable ticker list, one symbol per line (read at launch)
     └── src/
-        ├── main.rs             ← HTTP server, routes, scheduler
+        ├── main.rs             ← HTTP server, render loop, significant-change detection
         ├── renderer.rs         ← composes modules into final image
-        ├── image.rs            ← E6 pixel buffer, palette, dithering
+        ├── image.rs            ← E6Canvas pixel buffer and palette
+        ├── font.rs             ← fontdue TTF rasterization (JetBrains Mono)
+        ├── location.rs         ← LAT/LON constants (gitignored, not in repo)
+        ├── gcal_creds.rs       ← Google Calendar OAuth credentials (gitignored)
+        ├── stock_creds.rs      ← Finnhub API key (gitignored)
         └── modules/
             ├── mod.rs          ← Module trait definition
-            ├── clock.rs        ← Phase 1: digital clock
-            ├── calendar.rs     ← Phase 2: Google Calendar
-            ├── weather.rs      ← Phase 3: weather data
-            ├── homeassistant.rs← Phase 4: HA sensors
-            ├── stocks.rs       ← Phase 5: stock quotes
-            └── banking.rs      ← Phase 6: bank balances
+            ├── clock.rs        ← date and time display
+            ├── weather.rs      ← NWS current temperature + H/L forecast
+            ├── rain.rs         ← NWS QPF rain forecast
+            ├── gcal.rs         ← Google Calendar today's events
+            └── stock.rs        ← Finnhub stock quotes
 ```
 
 ---
@@ -50,13 +55,15 @@ The device always initiates contact (server never pushes). All communication is 
 
 ```
 GET /api/image HTTP/1.1
-Host: <server-ip>:<port>
+Host: homeassistant.lan:7654
 X-Device-ID: e8:f6:0a:8f:03:6c
-If-None-Match: "<image-version-token>"
+X-Firmware-Version: <git-hash>
+If-None-Match: "<sha256-hex>"
 ```
 
-- `X-Device-ID`: device MAC address, used for logging and future per-device config.
-- `If-None-Match`: version token from the last successful response. Omitted on first boot.
+- `X-Device-ID`: device MAC address, used for logging.
+- `X-Firmware-Version`: firmware git hash. A change triggers an immediate server re-render.
+- `If-None-Match`: ETag from the last successful 200 response. Omitted on first boot or after a full reset (RTC memory cleared).
 
 ### Server Responses
 
@@ -64,32 +71,31 @@ If-None-Match: "<image-version-token>"
 ```
 HTTP/1.1 200 OK
 Content-Type: application/octet-stream
-Content-Length: 192000
-ETag: "<new-version-token>"
-X-Poll-Interval: 300
+ETag: "<sha256-hex>"
+X-Poll-Interval: 60
 X-Server-Time: 1745123456
+Cache-Control: no-store
 [192,000 bytes of raw 4bpp E6 pixel data]
 ```
 
 **No change (`304 Not Modified`):**
 ```
 HTTP/1.1 304 Not Modified
-ETag: "<current-version-token>"
-X-Poll-Interval: 300
+ETag: "<sha256-hex>"
+X-Poll-Interval: 60
 X-Server-Time: 1745123456
+Cache-Control: no-store
 ```
 
 **`X-Poll-Interval`** — seconds until the device should poll again.
-- Range: 60–3600 (1 minute to 1 hour).
-- If absent or out of range: device uses 300 s (5 minutes).
+- Currently fixed at 60 s by the server.
+- Device clamps received value to [60, 3600]; stores in RTC memory.
 
-**`X-Server-Time`** — Unix timestamp (seconds since epoch, UTC) at the moment the server generated the response.
-- Present on every response (200 and 304).
-- The device compares this against its local RTC. If the difference exceeds 30 seconds in either direction, the device updates its RTC to match the server time.
-- The server is the sole time authority. No NTP client is needed on the firmware.
-- Network transit latency (~1–5 ms on a local network) is negligible relative to the 30-second threshold and is not corrected for.
+**`X-Server-Time`** — Unix timestamp (UTC seconds) at response generation time.
+- Present on every response.
+- Device updates its RTC if the difference exceeds 30 seconds. The server is the sole time authority; no NTP client is needed on the firmware.
 
-**Connection failure / any non-2xx/304 response:** device uses 300 s (5 minutes) default. RTC is not updated.
+**Non-2xx/304 response:** device uses its stored poll interval unchanged; RTC is not updated. HTTP error code blinked on the red LED (blink count = HTTP status ÷ 100).
 
 ### Image Format
 
@@ -117,50 +123,83 @@ Values 0x4 and 0x7 are invalid for this panel and must not be used.
 
 ### Hardware Reference
 
-See `LESSONS_LEARNED.md` for full pin map, AXP2101 init sequence, and EPD driver details.
+See `LESSONS_LEARNED.md` for the full pin map, AXP2101 init sequence, and EPD driver details. Key facts:
+
+- **EPD SPI (bit-banged):** SCK=10, MOSI=11, CS=9, DC=8, RST=12, BUSY=13, PWR=6
+- **AXP2101 (I2C):** SDA=47, SCL=48, addr=0x34
+- **LEDs:** GPIO 45 (red), GPIO 42 (green) — both **active-low** (HIGH=off, LOW=on)
+- **BUSY signal:** HIGH = idle, LOW = working
+
+### LED Behavior
+
+Both LEDs are active-low. The red LED uses PWM (`analogWrite`); the green LED is digital-only.
+
+| State | Red duty | Green |
+|-------|----------|-------|
+| Idle (between polls) | 249 (≈2% on, dim heartbeat) | HIGH (off) |
+| Active (WiFi, HTTP, EPD) | 0 (fully on) | HIGH (off) |
+| Error blink | 0/255 alternating | HIGH (off) |
+| Green error blink | — | LOW/HIGH alternating |
 
 ### Persistent State (RTC Memory)
 
-Survives deep sleep without requiring flash writes:
+Survives deep sleep; lost on full power-off or battery removal.
 
 ```c
-RTC_DATA_ATTR uint32_t poll_interval_sec = 300;
-RTC_DATA_ATTR char     image_etag[64]    = "";
-RTC_DATA_ATTR uint32_t boot_count        = 0;
+RTC_DATA_ATTR char     s_etag[128]     = "";   // last received ETag
+RTC_DATA_ATTR uint32_t s_poll_interval = 60;   // seconds between polls
 ```
 
-WiFi credentials are stored in NVS (non-volatile storage) via the Arduino `Preferences` library, written once during provisioning.
+On cold boot both fall back to safe defaults: unconditional poll at the default interval.
 
-> **RTC power note:** The ESP32-S3 RTC is internal — it has no dedicated VBAT pin and no separate RTC battery. It runs from the AXP2101's 3.3V rail, which is sustained by the main LiPo during deep sleep (~20 µA draw). RTC memory is lost if the battery dies or is removed. On cold boot both RTC variables fall back to their safe defaults (`poll_interval_sec = 300`, `image_etag = ""`), causing one unconditional poll at the default interval — no special handling required.
-
-### Main Loop (runs once per wake)
+### Main Loop
 
 ```
-Wake from deep sleep
+Wake from deep sleep (or loop() iteration in DEBUG_NO_SLEEP mode)
 │
-├─ Init AXP2101 (I2C, enable power rails)
-├─ Connect WiFi (fast reconnect using cached BSSID/channel from NVS)
-│   └─ Timeout 10 s → on failure: skip poll, sleep poll_interval_sec
+├─ leds_active()        — full red: about to do network work
+├─ Init AXP2101         — enable all power rails at 3.3V
+├─ Connect WiFi
+│   └─ Timeout 10 s → blink red ×5, sleep/delay poll_interval, return
 │
 ├─ HTTP GET /api/image
-│   ├─ Send If-None-Match: image_etag
-│   ├─ Read X-Poll-Interval → clamp to [60, 3600] → store in RTC
-│   ├─ Read X-Server-Time → if |server_time - rtc_time| > 30 s: settimeofday()
+│   ├─ Send X-Device-ID, X-Firmware-Version
+│   ├─ Send If-None-Match (if ETag cached)
+│   ├─ Read X-Server-Time → sync RTC if delta > 30 s
+│   ├─ Read X-Poll-Interval → clamp [60, 3600] → store in RTC
 │   │
-│   ├─ 200 OK → receive 192,000 bytes
-│   │   ├─ Init EPD (SPI, AXP2101 EPD power rail, init sequence)
-│   │   ├─ Write pixel data to display
-│   │   ├─ Trigger refresh → wait BUSY
-│   │   ├─ Power off EPD
+│   ├─ 200 OK → stream 192,000 bytes directly to EPD (no MCU-side buffer)
+│   │   ├─ epd_init()
+│   │   ├─ Write pixel data via SPI while receiving from WiFi
+│   │   ├─ epd_refresh() — power on, trigger, wait BUSY, power off
 │   │   └─ Store new ETag in RTC
 │   │
 │   ├─ 304 Not Modified → no display update
 │   │
-│   └─ Error / timeout → poll_interval_sec = 300 (revert to default)
+│   └─ Error → blink red (count = status ÷ 100), keep old poll interval
 │
-├─ Disconnect WiFi
-└─ Deep sleep for poll_interval_sec
+├─ WiFi disconnect
+├─ leds_idle()          — dim red heartbeat
+└─ Deep sleep for poll_interval seconds
+   (or delay() if DEBUG_NO_SLEEP = true)
 ```
+
+**Key implementation detail:** the HTTP body is streamed directly to the EPD over SPI as bytes arrive from the socket. No 192 KB frame buffer is allocated on the MCU. The EPD's internal buffer accumulates the data; the refresh command is sent only after all bytes have been written.
+
+### Configuration (`firmware/include/config.h`)
+
+```c
+#define WIFI_SSID                "..."
+#define WIFI_PASSWORD            "..."
+#define SERVER_URL               "http://homeassistant.lan:7654/api/image"
+#define DEFAULT_POLL_INTERVAL_SEC  60u
+#define MIN_POLL_INTERVAL_SEC      60u
+#define MAX_POLL_INTERVAL_SEC    3600u
+#define WIFI_CONNECT_TIMEOUT_MS  10000u
+#define HTTP_TIMEOUT_MS           8000u
+```
+
+Credentials are compile-time constants in `config.h`. There is no runtime provisioning.
 
 ### Power Budget per Wake Cycle (no display update)
 
@@ -172,22 +211,7 @@ Wake from deep sleep
 | WiFi disconnect | 50 mA | 0.2 s | 0.003 mAh |
 | **Total per cycle** | | **~2.2 s** | **~0.084 mAh** |
 
-At a 5-minute poll interval: 12 cycles/hr × 0.084 mAh = **~1 mAh/hr** baseline.
-
-### WiFi Provisioning
-
-First-boot (no credentials in NVS): start a temporary AP (`PhotoPainter-Setup`), serve a minimal HTML form to collect SSID, password, and server address, store in NVS, reboot.
-
-### Configuration (`config.h`)
-
-```c
-#define DEFAULT_POLL_INTERVAL_SEC   300
-#define MIN_POLL_INTERVAL_SEC        60
-#define MAX_POLL_INTERVAL_SEC      3600
-#define WIFI_CONNECT_TIMEOUT_MS   10000
-#define HTTP_TIMEOUT_MS            8000
-#define SERVER_URL    "http://192.168.1.x:8080/api/image"
-```
+At a 60-second poll interval: 60 cycles/hr × 0.084 mAh = **~5 mAh/hr** baseline (without display updates).
 
 ---
 
@@ -197,67 +221,69 @@ First-boot (no credentials in NVS): start a temporary AP (`PhotoPainter-Setup`),
 
 - **Language:** Rust
 - **HTTP framework:** `axum` (async, `tokio` runtime)
-- **Image composition:** direct E6 pixel buffer — no RGB intermediary, no dithering (see palette section)
-- **Scheduling:** `tokio` tasks per module, each refreshes its data on its own interval
-- **Configuration:** `toml` file (`config.toml`)
-- **Font rendering:** `ab_glyph` for clock digits and text, rendered directly in E6 colors
-- **Host:** Raspberry Pi (dedicated, always-on)
+- **Font rendering:** `fontdue` TTF rasterizer with JetBrains Mono Regular and Bold
+- **Image composition:** direct E6 pixel buffer — no RGB intermediary, no dithering
+- **External data:** `reqwest` with `rustls-tls` (no OpenSSL dependency)
+- **Time:** `chrono` for date/time formatting; `std::time::Instant` for token expiry
+- **Hashing:** `sha2` (SHA-256) for ETag generation
+
+### Render Architecture
+
+The server does **not** re-render on every poll. Instead, a background task (`render_loop`) wakes every 60 seconds, refreshes all data modules in parallel, and checks whether any significant change has occurred. If so, it fetches fresh stock data and produces a new image; otherwise the cached image is served as-is.
+
+```
+render_loop (every 60 s):
+  tokio::join!(weather.refresh(), rain.refresh(), gcal.refresh())
+  if significant_change:
+    stock.refresh()          ← only when render is already happening
+    image = render(modules)
+    store image + ETag
+```
+
+Significant changes that trigger a re-render:
+- More than 60 minutes since last render
+- Current temperature changes ≥ 2°F
+- Forecast high or low changes ≥ 3°F
+- Near-term rain status (≤ 6-hour window) changes between None / Active / Imminent
+
+Stock data is **only fetched when a render is already being triggered** by one of the above conditions. Stock changes do not trigger renders on their own.
 
 ### Module Trait
 
-Each dashboard module implements a common trait:
-
 ```rust
 pub trait Module: Send + Sync {
-    /// Draw this module's content into the given rectangle of the canvas.
     fn render(&self, canvas: &mut E6Canvas, region: Rect);
-
-    /// How often this module's backing data should be refreshed.
     fn data_refresh_interval(&self) -> Duration;
-
-    /// Hint to the scheduler: how soon should the device poll after
-    /// this module's data changes? None = defer to global default.
     fn suggested_poll_interval(&self) -> Option<Duration>;
 }
 ```
 
-### Renderer
-
-The renderer holds a list of `(Module, Rect)` pairs. When the server receives a poll request:
-
-1. Each module renders into its `Rect` on a shared `E6Canvas`.
-2. The canvas is packed to 4bpp → 192,000-byte pixel buffer.
-3. The buffer is content-hashed (SHA-256 truncated to 64 bits, hex-encoded) → ETag.
-4. If ETag matches `If-None-Match` → `304 Not Modified`.
-5. Otherwise → `200 OK` with pixel buffer.
-6. `X-Poll-Interval` is set to the minimum of all modules' `suggested_poll_interval()` values, clamped to [60, 3600].
+All modules are passed `full_screen()` as their region (`Rect { x:0, y:0, width:800, height:480 }`) and self-manage their pixel coordinates internally.
 
 ### Image Pipeline
 
 ```
-Per-module renders (E6 color indices directly)
+tokio::join!(weather, rain, gcal) refresh in parallel
         │
         ▼
-E6Canvas — [u8; 384000] (one byte per pixel, values 0x0–0x6)
+Each module renders into E6Canvas [u8; 384000] (one byte per pixel)
+        │
+        ▼
+Bottom 48px: stock strip (colored) or version bar (first render only)
         │
         ▼
 Pack to 4bpp → [u8; 192000]
         │
         ▼
-SHA-256 → ETag
+SHA-256 → ETag (full 64-hex-char digest)
         │
         ▼
-Serve or 304
+Cache; serve on next GET or 304 if ETag matches
 ```
-
-No RGB conversion. No dithering. Modules paint with named E6 colors. The `E6Canvas` exposes primitives: `fill_rect`, `draw_text`, `draw_line`, `draw_icon`. All content is text and line-drawn icons in solid colors.
 
 ### E6 Color Palette
 
-Six valid colors. Modules reference them by name, not by index.
-
 ```rust
-#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum E6Color {
     Black  = 0x0,
     White  = 0x1,
@@ -268,73 +294,118 @@ pub enum E6Color {
 }
 ```
 
-> **Note:** Values 0x4 and 0x7 render as dark brown/purple on this panel and are excluded from the enum.
-
-### Layout System
-
-Modules are positioned by `Rect { x, y, width, height }` defined in `config.toml`. This allows layout changes without recompiling.
-
-```toml
-[layout]
-background = "white"
-
-[[layout.module]]
-type = "clock"
-region = { x = 0, y = 0, width = 800, height = 200 }
-
-[[layout.module]]
-type = "weather"
-region = { x = 0, y = 200, width = 400, height = 280 }
-
-[[layout.module]]
-type = "calendar"
-region = { x = 400, y = 200, width = 400, height = 280 }
-```
+Values 0x4 and 0x7 render as dark brown/purple on this panel and are excluded.
 
 ---
 
-## Dashboard Modules — Implementation Phases
+## Screen Layout
 
-### Phase 1 — Digital Clock (MVP)
-- Large digits, current time, current date.
-- No external data dependency.
-- `suggested_poll_interval`: 60 s (updates every minute).
-- Renders entirely from system time.
+All coordinates are pixels from top-left (0,0). Screen is 800 × 480 px landscape.
 
-### Phase 2 — Google Calendar
-- Next 3–5 upcoming events: title, date/time.
-- OAuth2 refresh token stored in `config.toml`.
-- Data refresh: every 5 minutes.
-- `suggested_poll_interval`: time until next event starts (capped at 1 hour).
+```
+y=0   ┌──────────────────────────────────────────────────────────────────────┐
+      │ [Clock] Tuesday, April 21st, 2026 8:15:30 PM        [Weather]        │
+y=4   │  24px black, left-margin=4                          Current: 96px    │
+      │                                                      bold green, R-  │
+      │ [Rain] 0.04 in/hr rain to start in 3.5 hours.       justified        │
+y≈26  │  28px blue, left-justified, max 500px wide           H/L: 43px green │
+      │                                                      R-justified      │
+y≈76  │  (weather block ends here on right; rain may extend further left)     │
+      │                                                                       │
+y=128 ├── Google Calendar ────────────────────────────────────────────────────┤
+      │  8:30 AM  Dentist appointment        ← past/all-day: white on black   │
+      │  All day  School holiday             ← next upcoming: yellow on blue  │
+      │  2:00 PM  Team standup               ← further upcoming: white on blue│
+      │  ...up to ~12 lines...                                                │
+y=430 ├───────────────────────────────────────────────────────────────────────┤
+      │  2px gap                                                              │
+y=432 ├── Stock Strip (48px) ─────────────────────────────────────────────────┤
+      │  ▓▓▓ MDT ▓▓▓│▓▓▓ RKLB ▓▓▓│▓▓▓ TSLA ▓▓▓│▓▓▓ BRK.B ▓▓▓              │
+      │  green=up/flat, red=down vs open; white text; 5px white dividers      │
+y=480 └───────────────────────────────────────────────────────────────────────┘
+```
 
-### Phase 3 — Weather
-- Current conditions + today's forecast.
-- Source TBD (OpenWeatherMap, Open-Meteo, or local weather station).
-- Data refresh: every 15–30 minutes.
-- `suggested_poll_interval`: 15 minutes.
+**Bottom strip switching:** On the very first render after server startup, the bottom 48px shows the version bar (`SV: <git-version>   FW: <fw-version>`, right-justified, 19.2px) instead of the stock strip. All subsequent renders show the stock strip.
 
-### Phase 4 — Home Assistant Sensors
-- Selected sensor values (temperature, humidity, door state, etc.) via HA REST API or WebSocket.
-- Configurable sensor list in `config.toml`.
-- Data refresh: configurable per sensor (30 s – 5 min).
-- `suggested_poll_interval`: minimum sensor refresh interval.
+**Weather / clock coexistence:** The weather module erases the area behind its temperature block (white fill_rect from `cur_x` to right edge) before drawing, eliminating any clock text that extends into the temperature region.
 
-### Phase 5 — Stock Quotes
-- Configurable ticker list.
-- Data refresh: every minute during market hours, suspended outside hours.
-- `suggested_poll_interval`: 60 s during market hours, longer otherwise.
+---
 
-### Phase 6 — Bank Balances
-- Read-only API access (institution-dependent, likely via Plaid or OFX).
-- Data refresh: once per hour or on-demand.
-- `suggested_poll_interval`: 1 hour.
+## Module Reference
 
-### Future Modules (TBD)
-- News headlines
-- Transit / commute times
-- Package tracking
-- Sports scores
-- Energy usage
+### Clock (`clock.rs`)
+
+- **Font:** 24px JetBrains Mono Regular, black
+- **Position:** x=4 (left margin), y=4 (top margin)
+- **Content:** `Wednesday, April 21st, 2026 8:15:30 PM` (single line)
+- **Data source:** system clock (`chrono::Local::now()`)
+
+### Weather (`weather.rs`)
+
+- **Data source:** National Weather Service (`api.weather.gov`)
+  - Two-step: `/points/{lat},{lon}` → gridpoints URLs (cached)
+  - Current temp: first period of `forecastHourly`
+  - H/L: first daytime and first nighttime period of `forecast`
+- **Refresh:** every 5 minutes
+- **Current temp:** 96px bold green, right-justified; auto-positions left of H/L column
+- **H/L:** 43px green, right-justified, stacked with 8px gap; right margin = 16px
+- **High** = first `isDaytime=true` NWS period (rolls to tomorrow's high after sunset)
+- **Low** = first `isDaytime=false` period (tonight's minimum, ~now through 6 AM)
+
+### Rain (`rain.rs`)
+
+- **Data source:** NWS gridpoints QPF (`quantitativePrecipitation`), 168-hour window
+- **Refresh:** every 5 minutes
+- **Position:** below clock, left-justified, max width 500px (word-wrapped)
+- **Font:** 28px JetBrains Mono Regular, blue
+- **Content:**
+  - `No rain forecast for 7 days.`
+  - `Currently raining X.XX in/hr.`
+  - `X.XX in/hr rain forecast to start in <duration>.`
+  - Optional second line: heavy rain (> 0.30 in/hr) following lighter rain
+- **Duration formatting:** < 60 min → integer minutes; < 48 hr → N.N hours; ≥ 48 hr → N days
+- **Significant-change tracking:** changes in the ≤ 6-hour window (Active / Imminent / None) trigger a screen refresh
+
+### Google Calendar (`gcal.rs`)
+
+- **Data source:** Google Calendar API v3, OAuth 2.0 refresh token flow
+- **Credentials:** `gcal_creds.rs` (gitignored) — CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN, CALENDAR_IDS
+- **Calendars:** multiple calendar IDs merged; exact-duplicate events (same summary + time) deduplicated
+- **Scope:** today only (midnight to midnight local time)
+- **Refresh:** every 5 minutes; access token cached with 60-second expiry margin
+- **Font:** 28px JetBrains Mono Regular
+- **Position:** y=128 to y=430 (~12 lines capacity; 9 guaranteed)
+- **Color coding by event status:**
+  - All-day events and past timed events: white text, black background
+  - Next upcoming timed event: yellow text, blue background
+  - Further upcoming timed events: white text, blue background
+- **Sort order:** all-day events first (sort_key = -1), then chronological by start time
+
+### Stock Quotes (`stock.rs`)
+
+- **Data source:** Finnhub free tier (`finnhub.io/api/v1/quote`)
+  - 15–20 minute delay; 60 API calls/minute on free tier
+  - Uses `c` (current price); falls back to `pc` (previous close) when market is closed
+  - Up/down vs `o` (open); falls back to `pc` when market hasn't opened yet (flat)
+- **Credentials:** `stock_creds.rs` (gitignored) — API_KEY
+- **Ticker config:** `stock_tickers.txt` in server working directory, one symbol per line, `#` comments supported; read once at server startup
+- **Position:** bottom 48px strip (y=432 to y=480)
+- **Layout:** equal-width sections separated by 5px white vertical dividers
+- **Font:** auto-sized from max 43px down to fit the widest label; centered in each section
+- **Color:** green background = price ≥ open; red background = price < open; white text
+- **Refresh policy:** fetched only when a screen render is already being triggered
+
+---
+
+## Sensitive Files (gitignored)
+
+| File | Contents |
+|------|----------|
+| `server/src/location.rs` | `LAT` and `LON` constants for NWS API lookups |
+| `server/src/gcal_creds.rs` | Google Calendar CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN, CALENDAR_IDS |
+| `server/src/stock_creds.rs` | Finnhub API_KEY |
+
+These files must be created manually on each deployment. They are compiled directly into the server binary as Rust constants.
 
 ---
 
@@ -342,49 +413,24 @@ region = { x = 400, y = 200, width = 400, height = 280 }
 
 | # | Question | Decision |
 |---|---|---|
-| 1 | WiFi provisioning | Hardcoded compile-time credentials (`config.h`) for now |
-| 2 | Server host | Dedicated Raspberry Pi |
-| 3 | Image transport | Full image every time (see note below); skip compression |
-| 4 | ETag strategy | Content-addressed: SHA-256 of pixel buffer (truncated, hex) |
-| 5 | Display orientation | Landscape (800 wide × 480 tall) |
-| 6 | E6 palette | Direct E6 color indices; solid colors only; no dithering |
-| 7 | Time sync | Server is time authority via `X-Server-Time`; firmware syncs RTC if delta > 30 s |
+| 1 | WiFi credentials | Compile-time constants in `config.h` |
+| 2 | Image transport | Full 192 KB image on change; 304 when unchanged |
+| 3 | ETag strategy | Content-addressed: full SHA-256 of pixel buffer, hex-encoded |
+| 4 | Display orientation | Landscape (800 × 480) |
+| 5 | Color strategy | Direct E6 color indices; solid colors only; no dithering |
+| 6 | Time sync | Server is time authority via `X-Server-Time`; firmware syncs RTC if delta > 30 s |
+| 7 | Render trigger | Significant-change detection, not per-poll; stock data piggybacks on other triggers |
+| 8 | MCU frame buffer | None — HTTP body streamed directly to EPD over SPI |
+| 9 | Font library | `fontdue` (pure Rust, no system deps); `ab_glyph` was considered and rejected |
+| 10 | Layout config | Hardcoded per-module constants; no runtime config file for layout |
 
 ---
 
-## Design Note: Full Image vs. Image Difference Transmission
+## Design Note: Full Image vs. Differential Transmission
 
-Currently the server always transmits the full 192,000-byte pixel buffer when the image has changed. This section documents the trade-offs of switching to differential (delta) transmission as a future optimisation.
+Currently the server transmits the full 192,000-byte pixel buffer when the image changes. A diff approach could reduce transfer size dramatically (a clock-only update might touch ~10% of pixels), but it would require:
 
-### Why a diff could be very effective here
+- Server: per-device last-sent image buffer keyed on `X-Device-ID`
+- Firmware: PSRAM-resident frame buffer (192 KB — fits in the 8 MB available); buffer must be written to flash to survive deep sleep
 
-The dashboard is composed of text and solid-color regions. Between two consecutive updates, most of the screen is unchanged — typically only the clock digits flip. A clock update might change four rectangular regions of roughly 80×120 pixels each, touching ~38,400 of 384,000 pixels (~10%). A simple dirty-rectangle diff for that update would be:
-
-```
-4 rectangles × ~10 bytes each = ~40 bytes
-```
-
-compared to 192,000 bytes for the full image — a **~4,800× reduction** for a clock-only update. Even a busier update (weather + calendar refresh) would typically affect far less than half the screen.
-
-### What differential transmission requires
-
-**Server side:**
-- Must retain the last image sent *per device* (keyed on `X-Device-ID`) to compute the diff.
-- Must choose a diff format and encode it. Options:
-  - *Dirty rectangles:* list of `(x, y, w, h, color)` tuples — optimal for solid-color fills and text clears.
-  - *Run-length encoded changed pixels:* efficient for arbitrary changes, simple to decode.
-  - *XOR + RLE:* XOR current with previous, then RLE the non-zero spans.
-- A separate endpoint or `Content-Type` header distinguishes full from diff responses.
-
-**Device (firmware) side:**
-- Must buffer the current displayed image in PSRAM (192 KB — fits easily in the 8 MB available).
-- Must apply the diff to the buffer before writing to the display.
-- State must be preserved across deep sleep (PSRAM loses content in deep sleep) — so the buffer would need to be stored in flash, adding ~192 KB flash writes per update, or the device must always request a full image on first wake after power loss.
-
-**Failure recovery:**
-- If the device misses a poll (connection failure), its buffer diverges from the server's `last_sent` state. The device signals this by omitting `If-None-Match` (cold boot) or by sending a new request header `X-Needs-Full: true`. The server responds with the full image unconditionally.
-- This is the same mechanism already used for first boot.
-
-### Recommendation
-
-Implement full-image transmission now. The 192 KB transfer at typical local WiFi throughput (~1–5 Mbps) completes in well under a second — not a meaningful battery cost on a 5-minute poll cycle. Revisit differential transmission if poll intervals are shortened to 60 seconds or below, at which point the per-wake WiFi cost of downloading 192 KB repeatedly becomes significant relative to the baseline radio overhead.
+**Recommendation:** The current 192 KB transfer at local WiFi speeds (~1–5 Mbps) completes in under a second and is not a meaningful battery cost at a 60-second poll interval. Revisit if poll intervals are shortened further or if the server moves off the local network.
