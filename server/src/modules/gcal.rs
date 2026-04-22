@@ -9,8 +9,8 @@ use super::{Module, Rect};
 const SIZE_PX:  f32 = 28.0;
 const MARGIN:   i32 = 8;
 const LINE_GAP: i32 = 4;
-const Y_START:  i32 = 145;  // below clock + max rain block
-const Y_END:    i32 = 428;  // above stock strip (SCREEN_H=480, STRIP_H=48, gap=4)
+const Y_START:  i32 = 128;  // below clock (margin=4) + worst-case rain (4 lines ≈ y=126)
+const Y_END:    i32 = 430;  // 2px above stock strip (SCREEN_H=480, STRIP_H=48 → y=432)
 
 struct TokenCache {
     token:      String,

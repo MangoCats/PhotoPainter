@@ -10,7 +10,7 @@ const SIZE_PX:          f32 = 28.0;
 const MARGIN:           i32 = 8;
 const LINE_GAP:         i32 = 4;
 const CLOCK_SIZE_PX:    i32 = 24;   // must match clock::SIZE_PX
-const CLOCK_MARGIN:     i32 = 8;    // must match clock::MARGIN
+const CLOCK_MARGIN:     i32 = 4;    // must match clock::MARGIN
 // Maximum pixel width for rain text — keeps it left of the temperature block.
 // The weather temp display starts at ~x=533 for 2-digit temperatures; 500px
 // gives comfortable clearance while fitting the two common short messages

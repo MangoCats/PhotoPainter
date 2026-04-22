@@ -7,7 +7,7 @@ use super::{Module, Rect};
 
 const CURRENT_SIZE_PX: f32 = 96.0;  // 20% of 480
 const HL_SIZE_PX:      f32 = 43.0;  // ~9% of 480
-const MARGIN:          i32 = 8;
+const MARGIN:          i32 = 4;
 const HL_ROW_GAP:      i32 = 8;
 
 #[derive(Default, Clone, Copy)]
