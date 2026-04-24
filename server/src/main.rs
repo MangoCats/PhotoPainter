@@ -3,6 +3,7 @@ mod gcal_creds;
 mod image;
 mod location;
 mod modules;
+mod nws_cache;
 mod renderer;
 mod stock_creds;
 
@@ -20,71 +21,74 @@ use tokio::sync::RwLock;
 use tracing_subscriber::{fmt, EnvFilter};
 use chrono::{DateTime, Local};
 
+use nws_cache::NwsPointsCache;
+use modules::battery::parse_battery_header;
 use modules::clock::ClockModule;
 use modules::gcal::GCalModule;
 use modules::rain::{RainModule, NearTermRain};
 use modules::stock::StockModule;
 use modules::weather::{WeatherModule, WeatherData};
-use renderer::{render, full_screen, RenderedImage};
+use renderer::{render, full_screen, gcal_region, RenderedImage};
 
 const SERVER_VERSION: &str = env!("GIT_VERSION");
 
 // ── Significant-change tracking ───────────────────────────────────────────────
 
-/// Values as they appeared at the most recent screen refresh.
 struct DisplayedState {
     refresh_time:   DateTime<Local>,
     current_temp_f: i32,
     high_f:         i32,
     low_f:          i32,
     near_rain:      NearTermRain,
+    batt_pct:       Option<i32>,
+    batt_charging:  Option<bool>,
 }
 
-/// Returns true if any data element has changed enough to warrant a repaint.
 fn is_significant_change(
-    displayed:  &DisplayedState,
-    weather:    Option<WeatherData>,
-    near_rain:  NearTermRain,
-    now:        DateTime<Local>,
+    displayed:    &DisplayedState,
+    weather:      Option<WeatherData>,
+    near_rain:    NearTermRain,
+    batt_pct:     Option<i32>,
+    batt_charging: Option<bool>,
+    now:          DateTime<Local>,
 ) -> bool {
-    // Time: more than one hour since last refresh
     if now.signed_duration_since(displayed.refresh_time).num_minutes() > 60 {
         return true;
     }
     if let Some(w) = weather {
-        // Current temperature: two or more degrees
         if (w.current_f - displayed.current_temp_f).abs() >= 2 { return true; }
-        // Forecast high or low: three or more degrees
         if (w.high_f - displayed.high_f).abs() >= 3 { return true; }
         if (w.low_f  - displayed.low_f).abs()  >= 3 { return true; }
     }
-    // Near-term rain (≤6 hr window) changed
     if near_rain != displayed.near_rain { return true; }
+    // Battery: charging state changed, or charge level shifted ≥5%
+    if batt_charging != displayed.batt_charging { return true; }
+    if let (Some(cur), Some(prev)) = (batt_pct, displayed.batt_pct) {
+        if (cur - prev).abs() >= 5 { return true; }
+    }
     false
 }
 
 // ── Shared state ──────────────────────────────────────────────────────────────
 
 struct AppState {
-    image:          RwLock<RenderedImage>,
-    fw_version:     RwLock<String>,
-    weather:        WeatherModule,
-    rain:           RainModule,
-    gcal:           GCalModule,
-    stock:          StockModule,
-    displayed:      RwLock<Option<DisplayedState>>,
-    /// True once the version bar has been shown; subsequent renders show the stock strip.
-    version_shown:  RwLock<bool>,
+    image:      RwLock<RenderedImage>,
+    fw_version: RwLock<String>,
+    weather:    WeatherModule,
+    rain:       RainModule,
+    gcal:       GCalModule,
+    stock:      StockModule,
+    displayed:  RwLock<Option<DisplayedState>>,
 }
 type SharedState = Arc<AppState>;
 
-/// Commit a fresh render to `state.displayed`, preserving last-known temp values
-/// if weather data was not available at render time.
 async fn commit_displayed(
-    state:     &AppState,
-    now:       DateTime<Local>,
-    weather:   Option<WeatherData>,
-    near_rain: NearTermRain,
+    state:         &AppState,
+    now:           DateTime<Local>,
+    weather:       Option<WeatherData>,
+    near_rain:     NearTermRain,
+    batt_pct:      Option<i32>,
+    batt_charging: Option<bool>,
 ) {
     let mut guard = state.displayed.write().await;
     let prev = guard.as_ref();
@@ -100,7 +104,28 @@ async fn commit_displayed(
             .or_else(|| prev.map(|d| d.low_f))
             .unwrap_or(0),
         near_rain,
+        batt_pct:      batt_pct.or_else(|| prev.and_then(|d| d.batt_pct)),
+        batt_charging: batt_charging.or_else(|| prev.and_then(|d| d.batt_charging)),
     });
+}
+
+// ── Render helper ─────────────────────────────────────────────────────────────
+
+async fn do_render(state: &AppState, show_version: bool) -> RenderedImage {
+    let fw_ver = state.fw_version.read().await.clone();
+    let clock  = ClockModule;
+    render(
+        &[
+            (&clock,         full_screen()),
+            (&state.rain,    full_screen()),
+            (&state.weather, full_screen()),
+            (&state.gcal,    gcal_region()),
+        ],
+        SERVER_VERSION,
+        &fw_ver,
+        show_version,
+        &state.stock,
+    )
 }
 
 // ── Ticker config ─────────────────────────────────────────────────────────────
@@ -122,39 +147,28 @@ fn load_tickers() -> Vec<String> {
 // ── Background render task ────────────────────────────────────────────────────
 
 async fn render_loop(state: SharedState) {
-    let clock = ClockModule;
     loop {
         tokio::join!(state.weather.refresh(), state.rain.refresh(), state.gcal.refresh());
         let now       = Local::now();
         let weather   = state.weather.peek();
         let near_rain = state.rain.peek_near();
+        let battery   = state.weather.peek_battery();
+        let batt_pct      = battery.as_ref().map(|b| b.pct);
+        let batt_charging = battery.as_ref().map(|b| b.charging);
 
         let should_render = {
             let ds = state.displayed.read().await;
             match ds.as_ref() {
-                None     => true,   // never rendered yet
-                Some(ds) => is_significant_change(ds, weather, near_rain.clone(), now),
+                None     => true,
+                Some(ds) => is_significant_change(ds, weather, near_rain.clone(), batt_pct, batt_charging, now),
             }
         };
 
         if should_render {
-            // Fetch stock data only when a screen refresh is already happening
             state.stock.refresh().await;
-
-            let show_version = !*state.version_shown.read().await;
-            let fw_ver = state.fw_version.read().await.clone();
-            let image  = render(
-                &[(&clock, full_screen()), (&state.rain, full_screen()), (&state.weather, full_screen()), (&state.gcal, full_screen())],
-                SERVER_VERSION,
-                &fw_ver,
-                show_version,
-                &state.stock,
-            );
+            let image = do_render(&state, false).await;
             *state.image.write().await = image;
-            commit_displayed(&state, now, weather, near_rain).await;
-            if show_version {
-                *state.version_shown.write().await = true;
-            }
+            commit_displayed(&state, now, weather, near_rain, batt_pct, batt_charging).await;
             tracing::info!(
                 current = weather.map(|w| w.current_f).unwrap_or(0),
                 high    = weather.map(|w| w.high_f).unwrap_or(0),
@@ -179,7 +193,21 @@ async fn get_image(
         .unwrap_or("unknown")
         .to_string();
 
-    // Firmware version change is always a significant change — re-render immediately
+    // Parse battery header; update weather module so next render reflects it
+    let batt_info = req.headers()
+        .get("x-battery")
+        .and_then(|v| v.to_str().ok())
+        .and_then(parse_battery_header);
+    if let Some(ref batt) = batt_info {
+        tracing::info!(
+            "battery {}% {}mV charging={}{} (device: {device_id})",
+            batt.pct, batt.mv, batt.charging,
+            batt.hrs.map(|h| format!(" {:.1}h", h)).unwrap_or_default()
+        );
+    }
+    state.weather.update_battery(batt_info);
+
+    // Firmware version change → re-render immediately with updated version string
     if let Some(new_fw) = req.headers()
         .get("x-firmware-version")
         .and_then(|v| v.to_str().ok())
@@ -188,25 +216,15 @@ async fn get_image(
         if fw.as_str() != new_fw {
             tracing::info!("Firmware version updated: {:?} → {:?}", *fw, new_fw);
             *fw = new_fw.to_string();
-            let fw_str = fw.clone();
             drop(fw);
-            let clock     = ClockModule;
             let now       = Local::now();
             let weather   = state.weather.peek();
             let near_rain = state.rain.peek_near();
-            let show_version = !*state.version_shown.read().await;
-            let new_image = render(
-                &[(&clock, full_screen()), (&state.rain, full_screen()), (&state.weather, full_screen()), (&state.gcal, full_screen())],
-                SERVER_VERSION,
-                &fw_str,
-                show_version,
-                &state.stock,
-            );
+            let batt_pct      = state.weather.peek_battery().as_ref().map(|b| b.pct);
+            let batt_charging = state.weather.peek_battery().as_ref().map(|b| b.charging);
+            let new_image = do_render(&state, false).await;
             *state.image.write().await = new_image;
-            commit_displayed(&state, now, weather, near_rain).await;
-            if show_version {
-                *state.version_shown.write().await = true;
-            }
+            commit_displayed(&state, now, weather, near_rain, batt_pct, batt_charging).await;
         }
     }
 
@@ -248,32 +266,32 @@ fn add_common_headers(headers: &mut HeaderMap, etag: &str, poll_secs: u64) {
 async fn main() {
     fmt().with_env_filter(EnvFilter::from_default_env()).init();
 
-    let tickers = load_tickers();
-    let clock   = ClockModule;
-    let weather = WeatherModule::new();
-    let rain    = RainModule::new();
-    let gcal    = GCalModule::new();
-    let stock   = StockModule::new(tickers);
+    let tickers   = load_tickers();
+    let nws_cache = Arc::new(NwsPointsCache::new());
+    let client    = reqwest::Client::builder()
+        .user_agent("PhotoPainter/1.0 (github.com/photopainter)")
+        .timeout(Duration::from_secs(15))
+        .build()
+        .expect("failed to build HTTP client");
 
-    // Initial render always shows the version bar (stock data not yet fetched)
-    let initial = render(
-        &[(&clock, full_screen()), (&rain, full_screen()), (&weather, full_screen()), (&gcal, full_screen())],
-        SERVER_VERSION,
-        "unknown",
-        true,
-        &stock,
-    );
+    let weather = WeatherModule::new(client.clone(), Arc::clone(&nws_cache));
+    let rain    = RainModule::new(client.clone(), Arc::clone(&nws_cache));
+    let gcal    = GCalModule::new(client.clone());
+    let stock   = StockModule::new(tickers, client);
 
     let state: SharedState = Arc::new(AppState {
-        image:         RwLock::new(initial),
-        fw_version:    RwLock::new("unknown".to_string()),
+        image:      RwLock::new(RenderedImage { packed: Vec::new(), etag: String::new() }),
+        fw_version: RwLock::new("unknown".to_string()),
         weather,
         rain,
         gcal,
         stock,
-        displayed:     RwLock::new(None),   // forces a render on first loop iteration
-        version_shown: RwLock::new(true),   // initial render already showed version bar
+        displayed:  RwLock::new(None),
     });
+
+    // Initial render shows the version bar once; render_loop always shows the stock strip
+    let initial = do_render(&state, true).await;
+    *state.image.write().await = initial;
 
     tokio::spawn(render_loop(Arc::clone(&state)));
 

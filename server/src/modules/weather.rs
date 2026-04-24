@@ -1,9 +1,9 @@
-use std::sync::Mutex;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
 use crate::font::{draw_text, measure_text};
 use crate::image::{E6Canvas, E6Color};
-use crate::location;
+use crate::nws_cache::NwsPointsCache;
 use super::{Module, Rect};
+use super::battery::BatteryInfo;
 
 const CURRENT_SIZE_PX: f32 = 96.0;
 const HL_SIZE_PX:      f32 = 43.0;
@@ -11,6 +11,15 @@ const MARGIN:          i32 = 4;
 const HL_ROW_GAP:      i32 = 8;
 const ICON_SIZE:       i32 = 64;
 const ICON_GAP:        i32 = 8;
+
+const BATT_FONT_PX:   f32 = 14.0;
+const BATT_TOP_PAD:   i32 = 2;
+const BATT_GAP:       i32 = 3;
+const BATT_ICON_BODY: i32 = 19;
+const BATT_ICON_NUB:  i32 = 3;
+const BATT_ICON_W:    i32 = 22;  // BODY + NUB
+const BATT_ICON_H:    i32 = 10;
+const BATT_ICON_SEP:  i32 = 4;   // gap between icon and text
 
 #[derive(Clone, Copy, Default, PartialEq)]
 pub enum WeatherCondition {
@@ -28,29 +37,33 @@ pub struct WeatherData {
     pub condition: WeatherCondition,
 }
 
-struct CachedUrls {
-    forecast:        String,
-    forecast_hourly: String,
-}
-
 pub struct WeatherModule {
-    data:   Mutex<Option<WeatherData>>,
-    urls:   Mutex<Option<CachedUrls>>,
-    client: reqwest::Client,
+    data:      Mutex<Option<WeatherData>>,
+    battery:   Mutex<Option<BatteryInfo>>,
+    nws_cache: Arc<NwsPointsCache>,
+    client:    reqwest::Client,
 }
 
 impl WeatherModule {
-    pub fn new() -> Self {
-        let client = reqwest::Client::builder()
-            .user_agent("PhotoPainter/1.0 (github.com/photopainter)")
-            .timeout(Duration::from_secs(15))
-            .build()
-            .expect("failed to build HTTP client");
-        Self { data: Mutex::new(None), urls: Mutex::new(None), client }
+    pub fn new(client: reqwest::Client, nws_cache: Arc<NwsPointsCache>) -> Self {
+        Self {
+            data:      Mutex::new(None),
+            battery:   Mutex::new(None),
+            nws_cache,
+            client,
+        }
     }
 
     pub fn peek(&self) -> Option<WeatherData> {
         *self.data.lock().unwrap()
+    }
+
+    pub fn peek_battery(&self) -> Option<BatteryInfo> {
+        self.battery.lock().unwrap().clone()
+    }
+
+    pub fn update_battery(&self, info: Option<BatteryInfo>) {
+        *self.battery.lock().unwrap() = info;
     }
 
     pub async fn refresh(&self) {
@@ -60,31 +73,15 @@ impl WeatherModule {
         }
     }
 
-    async fn forecast_urls(&self) -> Result<(String, String), Box<dyn std::error::Error + Send + Sync>> {
-        {
-            let g = self.urls.lock().unwrap();
-            if let Some(u) = g.as_ref() {
-                return Ok((u.forecast.clone(), u.forecast_hourly.clone()));
-            }
-        }
-        let url  = format!("https://api.weather.gov/points/{:.4},{:.4}", location::LAT, location::LON);
-        let body: serde_json::Value = self.client.get(&url).send().await?.json().await?;
-        let props = &body["properties"];
-        let forecast = props["forecast"].as_str().ok_or("missing forecast url")?.to_string();
-        let hourly   = props["forecastHourly"].as_str().ok_or("missing forecastHourly url")?.to_string();
-        *self.urls.lock().unwrap() = Some(CachedUrls { forecast: forecast.clone(), forecast_hourly: hourly.clone() });
-        Ok((forecast, hourly))
-    }
-
     async fn fetch(&self) -> Result<WeatherData, Box<dyn std::error::Error + Send + Sync>> {
-        let (forecast_url, hourly_url) = self.forecast_urls().await?;
+        let urls = self.nws_cache.get(&self.client).await?;
 
-        let hourly: serde_json::Value = self.client.get(&hourly_url).send().await?.json().await?;
-        let period0 = &hourly["properties"]["periods"][0];
+        let hourly: serde_json::Value = self.client.get(&urls.forecast_hourly).send().await?.json().await?;
+        let period0   = &hourly["properties"]["periods"][0];
         let current_f = period0["temperature"].as_i64().ok_or("missing current temp")? as i32;
         let condition = parse_condition(period0["icon"].as_str().unwrap_or(""));
 
-        let daily: serde_json::Value = self.client.get(&forecast_url).send().await?.json().await?;
+        let daily: serde_json::Value = self.client.get(&urls.forecast).send().await?.json().await?;
         let periods = daily["properties"]["periods"].as_array().ok_or("missing periods")?;
 
         let high_f = periods.iter()
@@ -132,7 +129,6 @@ fn parse_condition(icon_url: &str) -> WeatherCondition {
 // Icon box is ICON_SIZE × ICON_SIZE (64×64).
 
 fn draw_cloud(canvas: &mut E6Canvas, ix: i32, iy: i32, color: E6Color) {
-    // Three puffy bumps + filled base: spans x=[12,52], y=[12,38]
     canvas.fill_disc(ix + 32, iy + 22, 10, color); // center (tallest bump)
     canvas.fill_disc(ix + 20, iy + 27,  8, color); // left bump
     canvas.fill_disc(ix + 44, iy + 27,  8, color); // right bump
@@ -140,7 +136,6 @@ fn draw_cloud(canvas: &mut E6Canvas, ix: i32, iy: i32, color: E6Color) {
 }
 
 fn draw_small_cloud(canvas: &mut E6Canvas, ix: i32, iy: i32, color: E6Color) {
-    // Smaller cloud in the lower-left for partly-cloudy icons
     canvas.fill_disc(ix + 22, iy + 44, 7, color);
     canvas.fill_disc(ix + 14, iy + 48, 5, color);
     canvas.fill_disc(ix + 30, iy + 48, 5, color);
@@ -148,14 +143,11 @@ fn draw_small_cloud(canvas: &mut E6Canvas, ix: i32, iy: i32, color: E6Color) {
 }
 
 fn draw_sun_full(canvas: &mut E6Canvas, ix: i32, iy: i32) {
-    // Large sun centered in the icon box
     canvas.fill_disc(ix + 32, iy + 30, 12, E6Color::Yellow);
-    // Cardinal rays (3×6 px bars)
     canvas.fill_rect(ix + 31, iy + 12, 3, 6, E6Color::Yellow); // N
     canvas.fill_rect(ix + 31, iy + 44, 3, 6, E6Color::Yellow); // S
     canvas.fill_rect(ix + 46, iy + 29, 6, 3, E6Color::Yellow); // E
     canvas.fill_rect(ix + 12, iy + 29, 6, 3, E6Color::Yellow); // W
-    // Diagonal rays (4×4 px squares)
     canvas.fill_rect(ix + 43, iy + 15, 4, 4, E6Color::Yellow); // NE
     canvas.fill_rect(ix + 43, iy + 41, 4, 4, E6Color::Yellow); // SE
     canvas.fill_rect(ix + 17, iy + 41, 4, 4, E6Color::Yellow); // SW
@@ -163,7 +155,6 @@ fn draw_sun_full(canvas: &mut E6Canvas, ix: i32, iy: i32) {
 }
 
 fn draw_sun_small(canvas: &mut E6Canvas, ix: i32, iy: i32) {
-    // Small sun in upper-right, for partly-cloudy-day icon
     canvas.fill_disc(ix + 45, iy + 18, 9, E6Color::Yellow);
     canvas.fill_rect(ix + 44, iy +  5, 3, 5, E6Color::Yellow); // N
     canvas.fill_rect(ix + 44, iy + 29, 3, 5, E6Color::Yellow); // S
@@ -176,26 +167,20 @@ fn draw_sun_small(canvas: &mut E6Canvas, ix: i32, iy: i32) {
 }
 
 fn draw_moon_full(canvas: &mut E6Canvas, ix: i32, iy: i32) {
-    // Crescent moon centered: yellow disc with white disc offset to carve crescent
     canvas.fill_disc(ix + 29, iy + 30, 15, E6Color::Yellow);
-    canvas.fill_disc(ix + 37, iy + 24, 12, E6Color::White);
+    canvas.fill_disc(ix + 37, iy + 24, 12, E6Color::White);  // carve crescent
 }
 
 fn draw_moon_small(canvas: &mut E6Canvas, ix: i32, iy: i32) {
-    // Small crescent moon in upper-right, for partly-cloudy-night icon
     canvas.fill_disc(ix + 44, iy + 19, 10, E6Color::Yellow);
-    canvas.fill_disc(ix + 50, iy + 14,  8, E6Color::White);
+    canvas.fill_disc(ix + 50, iy + 14,  8, E6Color::White);  // carve crescent
 }
 
 fn draw_weather_icon(canvas: &mut E6Canvas, ix: i32, iy: i32, cond: WeatherCondition) {
     match cond {
-        WeatherCondition::ClearDay => {
-            draw_sun_full(canvas, ix, iy);
-        }
-        WeatherCondition::ClearNight => {
-            draw_moon_full(canvas, ix, iy);
-        }
-        WeatherCondition::PartlyCloudyDay => {
+        WeatherCondition::ClearDay          => draw_sun_full(canvas, ix, iy),
+        WeatherCondition::ClearNight        => draw_moon_full(canvas, ix, iy),
+        WeatherCondition::PartlyCloudyDay   => {
             draw_sun_small(canvas, ix, iy);
             draw_small_cloud(canvas, ix, iy, E6Color::Blue);
         }
@@ -203,16 +188,14 @@ fn draw_weather_icon(canvas: &mut E6Canvas, ix: i32, iy: i32, cond: WeatherCondi
             draw_moon_small(canvas, ix, iy);
             draw_small_cloud(canvas, ix, iy, E6Color::Blue);
         }
-        WeatherCondition::Cloudy => {
-            draw_cloud(canvas, ix, iy, E6Color::Blue);
-        }
-        WeatherCondition::Rain => {
+        WeatherCondition::Cloudy            => draw_cloud(canvas, ix, iy, E6Color::Blue),
+        WeatherCondition::Rain              => {
             draw_cloud(canvas, ix, iy, E6Color::Blue);
             canvas.fill_rect(ix + 20, iy + 42, 3, 9, E6Color::Blue);
             canvas.fill_rect(ix + 30, iy + 42, 3, 9, E6Color::Blue);
             canvas.fill_rect(ix + 40, iy + 42, 3, 9, E6Color::Blue);
         }
-        WeatherCondition::Thunderstorm => {
+        WeatherCondition::Thunderstorm      => {
             draw_cloud(canvas, ix, iy, E6Color::Blue);
             // Z-shaped lightning bolt
             canvas.fill_rect(ix + 28, iy + 40, 10, 3, E6Color::Yellow);
@@ -220,23 +203,58 @@ fn draw_weather_icon(canvas: &mut E6Canvas, ix: i32, iy: i32, cond: WeatherCondi
             canvas.fill_rect(ix + 22, iy + 50, 10, 3, E6Color::Yellow);
             canvas.fill_rect(ix + 22, iy + 53,  4, 8, E6Color::Yellow);
         }
-        WeatherCondition::Snow => {
+        WeatherCondition::Snow              => {
             draw_cloud(canvas, ix, iy, E6Color::Blue);
-            // Three cross-shaped snowflakes
             for &cx in &[18i32, 30, 42] {
                 canvas.fill_rect(ix + cx - 4, iy + 47, 9, 3, E6Color::Blue);
                 canvas.fill_rect(ix + cx - 1, iy + 43, 3, 9, E6Color::Blue);
             }
         }
-        WeatherCondition::Fog => {
+        WeatherCondition::Fog               => {
             canvas.fill_rect(ix +  6, iy + 18, 52, 4, E6Color::Black);
             canvas.fill_rect(ix + 10, iy + 26, 44, 4, E6Color::Black);
             canvas.fill_rect(ix +  6, iy + 34, 52, 4, E6Color::Black);
             canvas.fill_rect(ix + 10, iy + 42, 44, 4, E6Color::Black);
             canvas.fill_rect(ix +  6, iy + 50, 52, 4, E6Color::Black);
         }
-        WeatherCondition::Unknown => {}
+        WeatherCondition::Unknown           => {}
     }
+}
+
+// ── Battery icon + label ──────────────────────────────────────────────────────
+
+fn draw_battery(canvas: &mut E6Canvas, batt: &BatteryInfo, right_edge: i32, top: i32, text_ascent: i32) {
+    let pct_str = format!("{}%", batt.pct);
+    let (text_w, _) = measure_text(&pct_str, BATT_FONT_PX, false);
+
+    let text_x = right_edge - text_w;
+    let icon_x = text_x - BATT_ICON_SEP - BATT_ICON_W;
+    let icon_y = top + (text_ascent - BATT_ICON_H) / 2;
+
+    // Body border (Black outline)
+    canvas.fill_rect(icon_x, icon_y, BATT_ICON_BODY, BATT_ICON_H, E6Color::Black);
+    // Interior (1px border)
+    canvas.fill_rect(icon_x + 1, icon_y + 1, BATT_ICON_BODY - 2, BATT_ICON_H - 2, E6Color::White);
+    // Nub on right side of body
+    let nub_y = icon_y + (BATT_ICON_H - 4) / 2;
+    canvas.fill_rect(icon_x + BATT_ICON_BODY, nub_y, BATT_ICON_NUB, 4, E6Color::Black);
+
+    // Fill level: Blue=charging, Green≥25%, Yellow≥10%, Red<10%
+    let fill_color = if batt.charging {
+        E6Color::Blue
+    } else if batt.pct >= 25 {
+        E6Color::Green
+    } else if batt.pct >= 10 {
+        E6Color::Yellow
+    } else {
+        E6Color::Red
+    };
+    let fill_w = (BATT_ICON_BODY - 4) * batt.pct / 100;
+    if fill_w > 0 {
+        canvas.fill_rect(icon_x + 2, icon_y + 2, fill_w, BATT_ICON_H - 4, fill_color);
+    }
+
+    draw_text(canvas, text_x, top, &pct_str, BATT_FONT_PX, E6Color::Black, false);
 }
 
 // ── Module impl ───────────────────────────────────────────────────────────────
@@ -246,6 +264,8 @@ impl Module for WeatherModule {
         let guard = self.data.lock().unwrap();
         let Some(d) = *guard else { return };
         drop(guard);
+
+        let battery = self.battery.lock().unwrap().clone();
 
         let cur_str  = format!("{}°", d.current_f);
         let high_str = format!("{}", d.high_f);
@@ -268,24 +288,35 @@ impl Module for WeatherModule {
         let hl_total = hl_a * 2 + HL_ROW_GAP;
         let block_h  = cur_a.max(hl_total);
         let top_y    = region.y + MARGIN;
-        let cur_y    = top_y + (block_h - cur_a)    / 2;
-        let hl_y     = top_y + (block_h - hl_total) / 2;
+        let cur_y    = top_y + (block_h - cur_a) / 2;
+
+        // Battery zone: measured from region top, may push H/L down
+        let batt_ascent      = measure_text("A", BATT_FONT_PX, false).1;
+        let batt_zone_bottom = if battery.is_some() {
+            region.y + BATT_TOP_PAD + batt_ascent + BATT_GAP
+        } else {
+            0
+        };
+        let hl_y = (top_y + (block_h - hl_total) / 2).max(batt_zone_bottom);
 
         let icon_x = cur_x - ICON_GAP - ICON_SIZE;
         let icon_y = top_y + (block_h - ICON_SIZE) / 2;
 
-        // Erase from icon left edge (or region left) to right margin
-        let erase_x = icon_x.max(region.x);
-        let erase_w = (region.x + region.width) - erase_x;
-        canvas.fill_rect(erase_x, top_y, erase_w, block_h, E6Color::White);
+        // Erase from icon left edge to right margin, covering battery zone if present
+        let erase_x      = icon_x.max(region.x);
+        let erase_top    = if battery.is_some() { region.y } else { top_y };
+        let erase_bottom = (top_y + block_h).max(hl_y + hl_total);
+        let erase_w      = (region.x + region.width) - erase_x;
+        canvas.fill_rect(erase_x, erase_top, erase_w, erase_bottom - erase_top, E6Color::White);
 
         draw_weather_icon(canvas, icon_x, icon_y, d.condition);
 
-        draw_text(canvas, cur_x,     cur_y,                    &cur_str,  CURRENT_SIZE_PX, E6Color::Green, true);
-        draw_text(canvas, hl_x_high, hl_y,                    &high_str, HL_SIZE_PX,      E6Color::Green, false);
-        draw_text(canvas, hl_x_low,  hl_y + hl_a + HL_ROW_GAP, &low_str, HL_SIZE_PX,    E6Color::Green, false);
-    }
+        draw_text(canvas, cur_x,     cur_y,                      &cur_str,  CURRENT_SIZE_PX, E6Color::Green, true);
+        draw_text(canvas, hl_x_high, hl_y,                       &high_str, HL_SIZE_PX,      E6Color::Green, false);
+        draw_text(canvas, hl_x_low,  hl_y + hl_a + HL_ROW_GAP,  &low_str,  HL_SIZE_PX,      E6Color::Green, false);
 
-    fn data_refresh_interval(&self) -> Duration { Duration::from_secs(300) }
-    fn suggested_poll_interval(&self) -> Option<Duration> { None }
+        if let Some(ref batt) = battery {
+            draw_battery(canvas, batt, hl_right, region.y + BATT_TOP_PAD, batt_ascent);
+        }
+    }
 }

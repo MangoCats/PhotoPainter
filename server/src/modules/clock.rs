@@ -1,4 +1,3 @@
-use std::time::Duration;
 use chrono::{Datelike, Timelike};
 use crate::font::draw_text;
 use crate::image::{E6Canvas, E6Color};
@@ -38,13 +37,5 @@ impl Module for ClockModule {
         );
 
         draw_text(canvas, region.x + MARGIN, region.y + MARGIN, &text, SIZE_PX, E6Color::Black, false);
-    }
-
-    fn data_refresh_interval(&self) -> Duration {
-        Duration::from_secs(60)
-    }
-
-    fn suggested_poll_interval(&self) -> Option<Duration> {
-        Some(Duration::from_secs(60))
     }
 }
