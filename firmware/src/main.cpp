@@ -186,6 +186,9 @@ static void build_battery_header(char* buf, size_t len) {
 
 // ── WiFi connect ──────────────────────────────────────────────────────────────
 static bool wifi_connect() {
+    // Tear down any prior state before starting fresh — a stuck half-connected
+    // state from a previous failed attempt would prevent reassociation otherwise.
+    WiFi.disconnect(true);   // disconnect + WIFI_OFF
     WiFi.mode(WIFI_STA);
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
     uint32_t t0 = millis();
@@ -294,6 +297,8 @@ void loop() {
     leds_active();  // full red: about to do WiFi + network work
 
     if (!wifi_connect()) {
+        WiFi.disconnect(true);        // shut radio down before sleeping
+        WiFi.mode(WIFI_OFF);
         blink(LED_RED, 5, 400, 400);  // error → blink ends in leds_idle()
         if (!DEBUG_NO_SLEEP) {
             esp_sleep_enable_timer_wakeup((uint64_t)s_poll_interval * 1000000ULL);
