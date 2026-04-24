@@ -1,5 +1,4 @@
 use std::sync::Mutex;
-use std::time::Duration;
 use crate::font::{draw_text, measure_text};
 use crate::image::{E6Canvas, E6Color, SCREEN_W, SCREEN_H};
 use crate::stock_creds::API_KEY;
@@ -24,12 +23,7 @@ pub struct StockModule {
 }
 
 impl StockModule {
-    pub fn new(tickers: Vec<String>) -> Self {
-        let client = reqwest::Client::builder()
-            .user_agent("PhotoPainter/1.0 (github.com/photopainter)")
-            .timeout(Duration::from_secs(15))
-            .build()
-            .expect("failed to build HTTP client");
+    pub fn new(tickers: Vec<String>, client: reqwest::Client) -> Self {
         Self { quotes: Mutex::new(Vec::new()), tickers, client }
     }
 

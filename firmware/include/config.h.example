@@ -14,6 +14,10 @@
 #define WIFI_CONNECT_TIMEOUT_MS  10000u
 #define HTTP_TIMEOUT_MS           8000u
 
+// ── Battery estimation ────────────────────────────────────────────────────────
+#define BATTERY_CAPACITY_MAH  2000u   // rated capacity of your LiPo cell
+#define AVG_DISCHARGE_MA         6u   // typical idle + EPD refresh average
+
 // ── AXP2101 (I2C) ────────────────────────────────────────────────────────────
 #define AXP_SDA   47
 #define AXP_SCL   48

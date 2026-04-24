@@ -2,15 +2,17 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use chrono::{DateTime, FixedOffset, Local, Timelike};
 use crate::font::{draw_text, measure_text};
-use crate::image::{E6Canvas, E6Color, SCREEN_W};
+use crate::image::{E6Canvas, E6Color};
 use crate::gcal_creds::{CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN, CALENDAR_IDS};
 use super::{Module, Rect};
 
 const SIZE_PX:  f32 = 28.0;
 const MARGIN:   i32 = 8;
 const LINE_GAP: i32 = 4;
-const Y_START:  i32 = 128;  // below clock (margin=4) + worst-case rain (4 lines ≈ y=126)
-const Y_END:    i32 = 430;  // 2px above stock strip (SCREEN_H=480, STRIP_H=48 → y=432)
+// Y_START: below the clock line (margin=4, size=24px → ascent≈19) and
+// worst-case rain text (starts y≈27, up to 4 lines × line_h≈26 → bottom≈131).
+// GCal starts slightly before worst-case rain end; actual overlap is rare.
+const Y_START: i32 = 128;
 
 struct TokenCache {
     token:      String,
@@ -31,12 +33,7 @@ pub struct GCalModule {
 }
 
 impl GCalModule {
-    pub fn new() -> Self {
-        let client = reqwest::Client::builder()
-            .user_agent("PhotoPainter/1.0 (github.com/photopainter)")
-            .timeout(Duration::from_secs(15))
-            .build()
-            .expect("failed to build HTTP client");
+    pub fn new(client: reqwest::Client) -> Self {
         Self {
             events: Mutex::new(Vec::new()),
             token:  Mutex::new(TokenCache {
@@ -136,48 +133,40 @@ impl GCalModule {
     }
 }
 
-fn percent_encode(s: &str) -> String {
+fn encode_bytes(s: &str, space_as_plus: bool) -> String {
     let mut out = String::new();
     for b in s.bytes() {
         match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' |
             b'-' | b'_' | b'.' | b'~' => out.push(b as char),
-            _ => out.push_str(&format!("%{b:02X}")),
+            b' ' if space_as_plus      => out.push('+'),
+            _                          => out.push_str(&format!("%{b:02X}")),
         }
     }
     out
 }
 
-fn form_encode(s: &str) -> String {
-    let mut out = String::new();
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' |
-            b'-' | b'_' | b'.' | b'~' => out.push(b as char),
-            b' ' => out.push('+'),
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
-}
+fn percent_encode(s: &str) -> String { encode_bytes(s, false) }
+fn form_encode(s: &str)    -> String { encode_bytes(s, true)  }
 
 impl Module for GCalModule {
     fn render(&self, canvas: &mut E6Canvas, region: Rect) {
-        let events  = self.events.lock().unwrap().clone();
-        let ascent  = measure_text("A", SIZE_PX, false).1;
-        let line_h  = ascent + LINE_GAP;
-        let max_y   = region.y + Y_END;
-        let mut y   = region.y + Y_START;
+        let events = self.events.lock().unwrap().clone();
+        let ascent = measure_text("A", SIZE_PX, false).1;
+        let line_h = ascent + LINE_GAP;
+        // max_y derived from region.height, leaving 2px above the stock strip
+        let max_y  = region.y + region.height - 2;
+        let mut y  = region.y + Y_START;
 
         if events.is_empty() {
             if y + ascent <= max_y {
-                canvas.fill_rect(0, y, SCREEN_W, line_h, E6Color::Black);
+                canvas.fill_rect(region.x, y, region.width, line_h, E6Color::Black);
                 draw_text(canvas, region.x + MARGIN, y, "No events today.", SIZE_PX, E6Color::White, false);
             }
             return;
         }
 
-        let now = Local::now();
+        let now             = Local::now();
         let current_minutes = now.hour() as i32 * 60 + now.minute() as i32;
         let mut found_next  = false;
 
@@ -198,12 +187,9 @@ impl Module for GCalModule {
             };
 
             let text = format!("{}  {}", event.start_display, event.summary);
-            canvas.fill_rect(0, y, SCREEN_W, line_h, bg_color);
+            canvas.fill_rect(region.x, y, region.width, line_h, bg_color);
             draw_text(canvas, region.x + MARGIN, y, &text, SIZE_PX, text_color, false);
             y += line_h;
         }
     }
-
-    fn data_refresh_interval(&self) -> Duration { Duration::from_secs(300) }
-    fn suggested_poll_interval(&self) -> Option<Duration> { None }
 }

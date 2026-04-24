@@ -1,22 +1,21 @@
-use std::sync::Mutex;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
 use chrono::{Utc, Local, Timelike};
 use crate::font::{draw_text, measure_text};
 use crate::image::{E6Canvas, E6Color};
-use crate::location;
+use crate::nws_cache::NwsPointsCache;
 use super::{Module, Rect};
 
-const SIZE_PX:          f32 = 28.0;
-const MARGIN:           i32 = 8;
-const LINE_GAP:         i32 = 4;
-const CLOCK_SIZE_PX:    i32 = 24;   // must match clock::SIZE_PX
-const CLOCK_MARGIN:     i32 = 4;    // must match clock::MARGIN
+const SIZE_PX:         f32 = 28.0;
+const MARGIN:          i32 = 8;
+const LINE_GAP:        i32 = 4;
+const CLOCK_SIZE_PX:   i32 = 24;   // must match clock::SIZE_PX
+const CLOCK_MARGIN:    i32 = 4;    // must match clock::MARGIN
 // Maximum pixel width for rain text — keeps it left of the temperature block.
 // Weather temp display starts at ~x=489 for 3-digit temperatures (worst case).
-const RAIN_MAX_W:       i32 = 500;
-const RAIN_THRESHOLD:   f64 = 0.001;
-const FORECAST_HOURS:   f64 = 168.0;
-const NEAR_TERM_HOURS:  f64 = 6.0;
+const RAIN_MAX_W:      i32 = 500;
+const RAIN_THRESHOLD:  f64 = 0.001;
+const FORECAST_HOURS:  f64 = 168.0;
+const NEAR_TERM_HOURS: f64 = 6.0;
 
 /// Discrete near-term rain state used for significant-change detection.
 /// Rates stored as milliinches/hr and times as tenth-hours for stable equality.
@@ -33,24 +32,15 @@ pub struct RainData {
     pub near:  NearTermRain,
 }
 
-struct GridCache {
-    url: String,
-}
-
 pub struct RainModule {
-    data:   Mutex<Option<RainData>>,
-    cache:  Mutex<Option<GridCache>>,
-    client: reqwest::Client,
+    data:      Mutex<Option<RainData>>,
+    nws_cache: Arc<NwsPointsCache>,
+    client:    reqwest::Client,
 }
 
 impl RainModule {
-    pub fn new() -> Self {
-        let client = reqwest::Client::builder()
-            .user_agent("PhotoPainter/1.0 (github.com/photopainter)")
-            .timeout(Duration::from_secs(15))
-            .build()
-            .expect("failed to build HTTP client");
-        Self { data: Mutex::new(None), cache: Mutex::new(None), client }
+    pub fn new(client: reqwest::Client, nws_cache: Arc<NwsPointsCache>) -> Self {
+        Self { data: Mutex::new(None), nws_cache, client }
     }
 
     pub fn peek_near(&self) -> NearTermRain {
@@ -67,24 +57,11 @@ impl RainModule {
         }
     }
 
-    async fn grid_url(&self) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        {
-            let g = self.cache.lock().unwrap();
-            if let Some(c) = g.as_ref() { return Ok(c.url.clone()); }
-        }
-        let url = format!("https://api.weather.gov/points/{:.4},{:.4}", location::LAT, location::LON);
-        let body: serde_json::Value = self.client.get(&url).send().await?.json().await?;
-        let grid = body["properties"]["forecastGridData"]
-            .as_str().ok_or("missing forecastGridData")?.to_string();
-        *self.cache.lock().unwrap() = Some(GridCache { url: grid.clone() });
-        Ok(grid)
-    }
-
     async fn fetch(&self) -> Result<RainData, Box<dyn std::error::Error + Send + Sync>> {
-        let grid_url = self.grid_url().await?;
+        let grid_url = self.nws_cache.get(&self.client).await?.forecast_grid;
         let body: serde_json::Value = self.client.get(&grid_url).send().await?.json().await?;
 
-        let qpf = &body["properties"]["quantitativePrecipitation"];
+        let qpf  = &body["properties"]["quantitativePrecipitation"];
         let uom  = qpf["uom"].as_str().unwrap_or("wmoUnit:m");
         let vals = qpf["values"].as_array().ok_or("missing QPF values")?;
 
@@ -96,20 +73,20 @@ impl RainModule {
             let (ts_str, dur_str) = valid_time.split_once('/').ok_or("bad validTime")?;
 
             let start: chrono::DateTime<chrono::FixedOffset> = ts_str.parse()?;
-            let start_utc  = start.with_timezone(&Utc);
-            let start_off  = (start_utc - now).num_seconds() as f64 / 3600.0;
-            let dur_hours  = parse_duration_hours(dur_str).ok_or("bad duration")?;
-            let end_off    = start_off + dur_hours;
+            let start_utc = start.with_timezone(&Utc);
+            let start_off = (start_utc - now).num_seconds() as f64 / 3600.0;
+            let dur_hours = parse_duration_hours(dur_str).ok_or("bad duration")?;
+            let end_off   = start_off + dur_hours;
 
             if end_off <= 0.0 || start_off >= FORECAST_HOURS { continue; }
 
-            let raw_val  = v["value"].as_f64().unwrap_or(0.0);
-            let inches   = match uom {
+            let raw_val = v["value"].as_f64().unwrap_or(0.0);
+            let inches  = match uom {
                 "wmoUnit:m"  => raw_val * 39.3701,
                 "wmoUnit:mm" => raw_val * 0.0393701,
                 _            => raw_val,  // assume inches
             };
-            let rate     = (inches / dur_hours) as f32;
+            let rate = (inches / dur_hours) as f32;
 
             if (rate as f64) > RAIN_THRESHOLD {
                 rain_periods.push((start_off, rate));
@@ -239,7 +216,7 @@ fn compute_forecast(rain_periods: Vec<(f64, f32)>) -> RainData {
 
 /// Word-wrap `text` so no line exceeds `max_w` pixels at SIZE_PX.
 fn word_wrap(text: &str, max_w: i32) -> Vec<String> {
-    let mut lines  = Vec::new();
+    let mut lines   = Vec::new();
     let mut current = String::new();
     for word in text.split_whitespace() {
         let candidate = if current.is_empty() {
@@ -285,7 +262,4 @@ impl Module for RainModule {
             }
         }
     }
-
-    fn data_refresh_interval(&self) -> Duration { Duration::from_secs(300) }
-    fn suggested_poll_interval(&self) -> Option<Duration> { None }
 }

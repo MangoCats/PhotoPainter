@@ -16,6 +16,10 @@
 RTC_DATA_ATTR static char     s_etag[128]     = "";
 RTC_DATA_ATTR static uint32_t s_poll_interval = DEFAULT_POLL_INTERVAL_SEC;
 
+// ── PMIC global ───────────────────────────────────────────────────────────────
+static XPowersPMU pmu;
+static bool       s_pmu_ok = false;
+
 // ── LED helpers ───────────────────────────────────────────────────────────────
 // Both LEDs are ACTIVE-LOW: GPIO HIGH = off, GPIO LOW = on.
 // Red  — PWM via analogWrite (inverted: high duty = mostly off = dim).
@@ -143,7 +147,6 @@ static void epd_fill(uint8_t packed_byte) {
 
 // ── AXP2101 init ─────────────────────────────────────────────────────────────
 static void pmic_init() {
-    XPowersPMU pmu;
     if (!pmu.begin(Wire, AXP_ADDR, AXP_SDA, AXP_SCL)) return;
     pmu.setALDO1Voltage(3300); pmu.enableALDO1();
     pmu.setALDO2Voltage(3300); pmu.enableALDO2();
@@ -151,8 +154,34 @@ static void pmic_init() {
     pmu.setALDO4Voltage(3300); pmu.enableALDO4();
     pmu.setDC1Voltage(3300);   pmu.enableDC1();
     pmu.setVbusCurrentLimit(XPOWERS_AXP2101_VBUS_CUR_LIM_2000MA);
+    pmu.enableBattDetection();
+    pmu.enableBattVoltageMeasure();
     // Disable the PMIC's built-in charge LED — it shares the green LED circuit
     pmu.setChargingLedMode(XPOWERS_CHG_LED_OFF);
+    s_pmu_ok = true;
+}
+
+// ── Battery header builder ────────────────────────────────────────────────────
+static void build_battery_header(char* buf, size_t len) {
+    if (!s_pmu_ok || !pmu.isBatteryConnect()) { buf[0] = '\0'; return; }
+
+    int      pct      = pmu.getBatteryPercent();
+    uint32_t mv       = pmu.getBattVoltage();
+    bool     charging = pmu.isCharging() || pmu.isStandby();
+
+    if (pct < 0) { buf[0] = '\0'; return; }  // no battery data
+
+    const char* status = pmu.isCharging() ? "charging"
+                       : pmu.isStandby()  ? "standby"
+                                          : "discharging";
+
+    if (charging) {
+        snprintf(buf, len, "pct=%d, mv=%u, status=%s", pct, (unsigned)mv, status);
+    } else {
+        float hrs = ((float)BATTERY_CAPACITY_MAH * (pct / 100.0f)) / AVG_DISCHARGE_MA;
+        snprintf(buf, len, "pct=%d, mv=%u, hrs=%.1f, status=%s",
+                 pct, (unsigned)mv, hrs, status);
+    }
 }
 
 // ── WiFi connect ──────────────────────────────────────────────────────────────
@@ -181,7 +210,7 @@ static void maybe_sync_rtc(const String& s) {
 }
 
 // ── HTTP poll — streams body directly to EPD, no large buffer needed ──────────
-static bool poll_server() {
+static bool poll_server(const char* batt_hdr) {
     static const char* kHeaders[] = { "ETag", "X-Poll-Interval", "X-Server-Time" };
     HTTPClient http;
     http.begin(SERVER_URL);
@@ -189,6 +218,7 @@ static bool poll_server() {
     http.collectHeaders(kHeaders, 3);
     http.addHeader("X-Device-ID",        WiFi.macAddress());
     http.addHeader("X-Firmware-Version", FIRMWARE_VERSION);
+    if (batt_hdr && batt_hdr[0] != '\0') http.addHeader("X-Battery", batt_hdr);
     if (s_etag[0] != '\0') http.addHeader("If-None-Match", s_etag);
 
     int code = http.GET();
@@ -258,6 +288,9 @@ void setup() {
 }
 
 void loop() {
+    char batt_hdr[80];
+    build_battery_header(batt_hdr, sizeof(batt_hdr));
+
     leds_active();  // full red: about to do WiFi + network work
 
     if (!wifi_connect()) {
@@ -270,7 +303,7 @@ void loop() {
         return;
     }
 
-    poll_server();
+    poll_server(batt_hdr);
 
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
