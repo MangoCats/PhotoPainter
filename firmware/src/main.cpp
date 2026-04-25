@@ -6,6 +6,14 @@
 #include "config.h"
 #include "version.h"
 
+// Defaults for optional config constants — override in config.h if needed.
+#ifndef BATTERY_CAPACITY_MAH
+#define BATTERY_CAPACITY_MAH 2000u
+#endif
+#ifndef AVG_DISCHARGE_MA
+#define AVG_DISCHARGE_MA 6u
+#endif
+
 #define LED_RED    45
 #define LED_GREEN  42
 
