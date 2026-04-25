@@ -7,9 +7,10 @@ use crate::location;
 
 #[derive(Clone)]
 pub struct NwsUrls {
-    pub forecast:        String,
-    pub forecast_hourly: String,
-    pub forecast_grid:   String,
+    pub forecast:             String,
+    pub forecast_hourly:      String,
+    pub forecast_grid:        String,
+    pub observation_stations: String,
 }
 
 pub struct NwsPointsCache {
@@ -37,9 +38,10 @@ impl NwsPointsCache {
         let body: serde_json::Value = client.get(&url).send().await?.json().await?;
         let props = &body["properties"];
         let urls  = NwsUrls {
-            forecast:        props["forecast"].as_str().ok_or("missing forecast url")?.to_string(),
-            forecast_hourly: props["forecastHourly"].as_str().ok_or("missing forecastHourly url")?.to_string(),
-            forecast_grid:   props["forecastGridData"].as_str().ok_or("missing forecastGridData url")?.to_string(),
+            forecast:             props["forecast"].as_str().ok_or("missing forecast url")?.to_string(),
+            forecast_hourly:      props["forecastHourly"].as_str().ok_or("missing forecastHourly url")?.to_string(),
+            forecast_grid:        props["forecastGridData"].as_str().ok_or("missing forecastGridData url")?.to_string(),
+            observation_stations: props["observationStations"].as_str().ok_or("missing observationStations url")?.to_string(),
         };
         *self.cached.lock().unwrap() = Some(urls.clone());
         Ok(urls)

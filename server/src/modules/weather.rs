@@ -1,4 +1,5 @@
 use std::sync::{Arc, Mutex};
+use chrono::{DateTime, FixedOffset, Utc};
 use crate::font::{draw_text, measure_text};
 use crate::image::{E6Canvas, E6Color};
 use crate::nws_cache::NwsPointsCache;
@@ -38,17 +39,19 @@ pub struct WeatherData {
 }
 
 pub struct WeatherModule {
-    data:      Mutex<Option<WeatherData>>,
-    battery:   Mutex<Option<BatteryInfo>>,
-    nws_cache: Arc<NwsPointsCache>,
-    client:    reqwest::Client,
+    data:        Mutex<Option<WeatherData>>,
+    battery:     Mutex<Option<BatteryInfo>>,
+    obs_station: Mutex<Option<String>>,   // cached URL for the nearest obs station
+    nws_cache:   Arc<NwsPointsCache>,
+    client:      reqwest::Client,
 }
 
 impl WeatherModule {
     pub fn new(client: reqwest::Client, nws_cache: Arc<NwsPointsCache>) -> Self {
         Self {
-            data:      Mutex::new(None),
-            battery:   Mutex::new(None),
+            data:        Mutex::new(None),
+            battery:     Mutex::new(None),
+            obs_station: Mutex::new(None),
             nws_cache,
             client,
         }
@@ -76,10 +79,15 @@ impl WeatherModule {
     async fn fetch(&self) -> Result<WeatherData, Box<dyn std::error::Error + Send + Sync>> {
         let urls = self.nws_cache.get(&self.client).await?;
 
+        // Hourly forecast: used for condition icon and as fallback current temp
         let hourly: serde_json::Value = self.client.get(&urls.forecast_hourly).send().await?.json().await?;
         let period0   = &hourly["properties"]["periods"][0];
-        let current_f = period0["temperature"].as_i64().ok_or("missing current temp")? as i32;
+        let hourly_f  = period0["temperature"].as_i64().ok_or("missing current temp")? as i32;
         let condition = parse_condition(period0["icon"].as_str().unwrap_or(""));
+
+        // Real-time station observation for current temp; falls back to hourly forecast
+        let current_f = self.current_temp_from_obs(&urls.observation_stations).await
+            .unwrap_or(hourly_f);
 
         let daily: serde_json::Value = self.client.get(&urls.forecast).send().await?.json().await?;
         let periods = daily["properties"]["periods"].as_array().ok_or("missing periods")?;
@@ -95,6 +103,69 @@ impl WeatherModule {
             .ok_or("missing low temp")? as i32;
 
         Ok(WeatherData { current_f, high_f, low_f, condition })
+    }
+
+    /// Returns the `/observations/latest` URL for the nearest station,
+    /// fetching and caching the station list on first call.
+    async fn obs_station_url(
+        &self,
+        stations_list_url: &str,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        {
+            if let Some(url) = self.obs_station.lock().unwrap().as_ref() {
+                return Ok(url.clone());
+            }
+        }
+        let body: serde_json::Value = self.client.get(stations_list_url).send().await?.json().await?;
+        let station_id = body["features"][0]["properties"]["stationIdentifier"]
+            .as_str()
+            .ok_or("no observation station in list")?;
+        let url = format!("https://api.weather.gov/stations/{station_id}/observations/latest");
+        *self.obs_station.lock().unwrap() = Some(url.clone());
+        Ok(url)
+    }
+
+    /// Fetches the latest station observation and returns the temperature in °F,
+    /// or `None` if the observation is unavailable, stale (>2 h), or fails QC.
+    async fn current_temp_from_obs(&self, stations_list_url: &str) -> Option<i32> {
+        let obs_url = match self.obs_station_url(stations_list_url).await {
+            Ok(u)  => u,
+            Err(e) => { tracing::warn!("obs station lookup failed: {e}"); return None; }
+        };
+
+        let resp = match self.client.get(&obs_url).send().await {
+            Ok(r)  => r,
+            Err(e) => { tracing::warn!("obs fetch failed: {e}"); return None; }
+        };
+        let body: serde_json::Value = match resp.json().await {
+            Ok(b)  => b,
+            Err(e) => { tracing::warn!("obs parse failed: {e}"); return None; }
+        };
+
+        let props = &body["properties"];
+
+        // Reject stale observations (station may be offline or slow to report)
+        if let Some(ts_str) = props["timestamp"].as_str() {
+            if let Ok(ts) = ts_str.parse::<DateTime<FixedOffset>>() {
+                let age_min = Utc::now()
+                    .signed_duration_since(ts.with_timezone(&Utc))
+                    .num_minutes();
+                if age_min > 120 {
+                    tracing::warn!("observation stale ({age_min} min old), using forecast");
+                    return None;
+                }
+            }
+        }
+
+        // Accept V (verified), Z (preliminary), G (auto QC passed)
+        let qc = props["temperature"]["qualityControl"].as_str().unwrap_or("X");
+        if !matches!(qc, "V" | "Z" | "G") {
+            tracing::warn!("observation QC rejected: {qc}");
+            return None;
+        }
+
+        let celsius = props["temperature"]["value"].as_f64()?;
+        Some(((celsius * 9.0 / 5.0) + 32.0).round() as i32)
     }
 }
 
