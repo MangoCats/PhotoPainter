@@ -279,10 +279,11 @@ const E6_PALETTE: [(u8, u8, u8); 16] = {
 
 fn packed_to_png(packed: &[u8]) -> Vec<u8> {
     let mut rgb = Vec::with_capacity((SCREEN_W * SCREEN_H * 3) as usize);
-    for &byte in packed {
-        let (r, g, b) = E6_PALETTE[(byte >> 4) as usize];
-        rgb.push(r); rgb.push(g); rgb.push(b);
+    // 180° rotation: iterate bytes in reverse, lo nibble before hi within each byte.
+    for &byte in packed.iter().rev() {
         let (r, g, b) = E6_PALETTE[(byte & 0x0F) as usize];
+        rgb.push(r); rgb.push(g); rgb.push(b);
+        let (r, g, b) = E6_PALETTE[(byte >> 4) as usize];
         rgb.push(r); rgb.push(g); rgb.push(b);
     }
     let mut out = Vec::new();
