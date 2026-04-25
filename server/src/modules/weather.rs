@@ -9,7 +9,7 @@ use super::battery::BatteryInfo;
 const CURRENT_SIZE_PX: f32 = 96.0;
 const HL_SIZE_PX:      f32 = 43.0;
 const MARGIN:          i32 = 4;
-const HL_ROW_GAP:      i32 = 8;
+const HL_ROW_GAP:      i32 = 4;
 pub(crate) const ICON_SIZE: i32 = 64;
 const ICON_GAP:        i32 = 8;
 const ICON_BG_R:       i32 = 10;  // rounded-corner radius for icon background
