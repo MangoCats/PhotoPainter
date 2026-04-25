@@ -280,6 +280,17 @@ fn draw_sun_small(canvas: &mut E6Canvas, ix: i32, iy: i32) {
 fn draw_moon_full(canvas: &mut E6Canvas, ix: i32, iy: i32, cutout: E6Color) {
     canvas.fill_disc(ix + 29, iy + 30, 15, E6Color::Yellow);
     canvas.fill_disc(ix + 37, iy + 24, 12, cutout);  // carve crescent
+
+    // Four single-pixel stars scattered outside the moon
+    for &(sx, sy) in &[(7i32, 9i32), (54, 6), (58, 35), (12, 55)] {
+        canvas.fill_rect(ix + sx, iy + sy, 1, 1, E6Color::White);
+    }
+    // One bright cross star: yellow center, four white arms
+    canvas.fill_rect(ix + 48, iy + 54,     1, 1, E6Color::Yellow);
+    canvas.fill_rect(ix + 47, iy + 54,     1, 1, E6Color::White);
+    canvas.fill_rect(ix + 49, iy + 54,     1, 1, E6Color::White);
+    canvas.fill_rect(ix + 48, iy + 53,     1, 1, E6Color::White);
+    canvas.fill_rect(ix + 48, iy + 55,     1, 1, E6Color::White);
 }
 
 fn draw_moon_small(canvas: &mut E6Canvas, ix: i32, iy: i32, cutout: E6Color) {
