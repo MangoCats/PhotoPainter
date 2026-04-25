@@ -9,7 +9,7 @@ use super::battery::BatteryInfo;
 const CURRENT_SIZE_PX: f32 = 96.0;
 const HL_SIZE_PX:      f32 = 43.0;
 const MARGIN:          i32 = 4;
-const HL_ROW_GAP:      i32 = 4;
+const HL_ROW_GAP:      i32 = 0;
 pub(crate) const ICON_SIZE: i32 = 64;
 const ICON_GAP:        i32 = 8;
 const ICON_BG_R:       i32 = 10;  // rounded-corner radius for icon background
@@ -429,7 +429,7 @@ impl Module for WeatherModule {
         let hl_x_low    = hl_right - low_w;
         let hl_col_left = hl_right - hl_col_w;
 
-        let cur_x = hl_col_left - half_char - cur_w;
+        let cur_x = hl_col_left - half_char - cur_w + 6;
 
         let hl_total = hl_a * 2 + HL_ROW_GAP;
         let block_h  = cur_a.max(hl_total);
