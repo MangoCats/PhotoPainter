@@ -151,22 +151,18 @@ fn format_start(start_off_hours: f64) -> String {
     let start = now + chrono::Duration::seconds((start_off_hours * 3600.0).round() as i64);
     let mins  = (start_off_hours * 60.0).round() as i64;
 
-    if mins < 91 {
-        return if mins == 1 { "in 1 minute".to_string() } else { format!("in {mins} minutes") };
-    }
-
     let today    = now.date_naive();
     let tomorrow = today.succ_opt().unwrap_or(today);
     let sdate    = start.date_naive();
     let shour    = start.hour();
-
-    if sdate == today || (sdate == tomorrow && shour < 6) {
-        return format!("in {:.1} hours", start_off_hours);
-    }
-
     let (_, h12) = start.hour12();
     let ampm     = if shour < 12 { "AM" } else { "PM" };
     let time_str = format!("{h12}:{:02}{ampm}", start.minute());
+
+    // Near-term: show clock time + rate unit instead of relative duration
+    if mins < 91 || sdate == today || (sdate == tomorrow && shour < 6) {
+        return format!("in/hr @ {time_str}");
+    }
 
     if sdate == tomorrow {
         format!("Tomorrow @ {time_str}")
