@@ -399,8 +399,8 @@ impl Module for WeatherModule {
         let battery = self.battery.lock().unwrap().clone();
 
         let cur_str  = format!("{}", d.current_f);
-        let high_str = format!("{}°", d.high_f);
-        let low_str  = format!("{}°", d.low_f);
+        let high_str = format!("{}", d.high_f);
+        let low_str  = format!("{}", d.low_f);
 
         let (cur_w,  cur_a) = measure_text(&cur_str,  CURRENT_SIZE_PX, true);
         let (high_w, hl_a)  = measure_text(&high_str, HL_SIZE_PX,      false);
