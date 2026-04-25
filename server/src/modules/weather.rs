@@ -234,29 +234,23 @@ fn draw_icon_bg(canvas: &mut E6Canvas, ix: i32, iy: i32, is_night: bool) {
 }
 
 fn draw_cloud(canvas: &mut E6Canvas, ix: i32, iy: i32) {
-    // Blue outline: each shape expanded by 1 px
-    canvas.fill_disc(ix + 32, iy + 22, 11, E6Color::Blue);
-    canvas.fill_disc(ix + 20, iy + 27,  9, E6Color::Blue);
-    canvas.fill_disc(ix + 44, iy + 27,  9, E6Color::Blue);
-    canvas.fill_rect(ix + 11, iy + 26, 42, 13, E6Color::Blue);
-    // White fill on top
-    canvas.fill_disc(ix + 32, iy + 22, 10, E6Color::White);
-    canvas.fill_disc(ix + 20, iy + 27,  8, E6Color::White);
-    canvas.fill_disc(ix + 44, iy + 27,  8, E6Color::White);
-    canvas.fill_rect(ix + 12, iy + 27, 40, 11, E6Color::White);
+    // Two-bump cloud: large left, small right, wide body — blue outline then white fill
+    canvas.fill_disc(ix + 21, iy + 22, 13, E6Color::Blue);  // left big bump outline
+    canvas.fill_disc(ix + 41, iy + 28, 10, E6Color::Blue);  // right small bump outline
+    canvas.fill_rect(ix +  7, iy + 26, 50, 14, E6Color::Blue); // body outline
+    canvas.fill_disc(ix + 21, iy + 22, 12, E6Color::White);
+    canvas.fill_disc(ix + 41, iy + 28,  9, E6Color::White);
+    canvas.fill_rect(ix +  8, iy + 27, 48, 13, E6Color::White);
 }
 
 fn draw_small_cloud(canvas: &mut E6Canvas, ix: i32, iy: i32) {
-    // Blue outline: each shape expanded by 1 px
-    canvas.fill_disc(ix + 22, iy + 44, 8, E6Color::Blue);
-    canvas.fill_disc(ix + 14, iy + 48, 6, E6Color::Blue);
-    canvas.fill_disc(ix + 30, iy + 48, 6, E6Color::Blue);
-    canvas.fill_rect(ix +  8, iy + 47, 28, 11, E6Color::Blue);
-    // White fill on top
-    canvas.fill_disc(ix + 22, iy + 44, 7, E6Color::White);
-    canvas.fill_disc(ix + 14, iy + 48, 5, E6Color::White);
-    canvas.fill_disc(ix + 30, iy + 48, 5, E6Color::White);
-    canvas.fill_rect(ix +  9, iy + 48, 26,  9, E6Color::White);
+    // Scaled-down two-bump cloud in lower-left of icon
+    canvas.fill_disc(ix + 16, iy + 44, 7, E6Color::Blue);
+    canvas.fill_disc(ix + 29, iy + 47, 5, E6Color::Blue);
+    canvas.fill_rect(ix +  8, iy + 47, 26, 10, E6Color::Blue);
+    canvas.fill_disc(ix + 16, iy + 44, 6, E6Color::White);
+    canvas.fill_disc(ix + 29, iy + 47, 4, E6Color::White);
+    canvas.fill_rect(ix +  9, iy + 48, 24,  9, E6Color::White);
 }
 
 fn draw_sun_full(canvas: &mut E6Canvas, ix: i32, iy: i32) {
