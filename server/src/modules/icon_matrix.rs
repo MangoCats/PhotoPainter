@@ -1,14 +1,13 @@
 use crate::font::{draw_text, measure_text};
 use crate::image::{E6Canvas, E6Color};
 use super::{Module, Rect};
-use super::weather::{draw_condition_icon, WeatherCondition};
+use super::weather::{draw_condition_icon, WeatherCondition, ICON_SIZE};
 
 const LABEL_SIZE: f32 = 14.0;
 const LABEL_GAP:  i32 = 6;   // between icon bottom and label baseline
 const ROW_GAP:    i32 = 32;  // between label baseline of row N and icon top of row N+1
 const COLS:       i32 = 5;
 const ROWS:       i32 = 2;
-const ICON_SIZE:  i32 = 64;  // must match weather::ICON_SIZE
 
 const ALL: &[(WeatherCondition, &str)] = &[
     (WeatherCondition::ClearDay,          "Clear Day"),

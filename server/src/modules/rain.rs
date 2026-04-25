@@ -4,12 +4,15 @@ use crate::font::{draw_text, measure_text};
 use crate::image::{E6Canvas, E6Color};
 use crate::nws_cache::NwsPointsCache;
 use super::{Module, Rect};
+use super::clock;
 
-const SIZE_PX:         f32 = 28.0;
-const MARGIN:          i32 = 8;
-const LINE_GAP:        i32 = 4;
-const CLOCK_SIZE_PX:   i32 = 24;   // must match clock::SIZE_PX
-const CLOCK_MARGIN:    i32 = 4;    // must match clock::MARGIN
+const SIZE_PX:  f32 = 28.0;
+const MARGIN:   i32 = 8;
+const LINE_GAP: i32 = 4;
+
+// Worst-case pixel bottom of the rain block: clock_margin(4) + clock_ascent(≈19) +
+// line_gap(4) + 4 rain lines × (rain_ascent≈21 + line_gap 4) = 27 + 100 = 127, rounded up.
+pub(crate) const GCAL_Y_START: i32 = 128;
 // Maximum pixel width for rain text — keeps it left of the temperature block.
 // Weather temp display starts at ~x=489 for 3-digit temperatures (worst case).
 const RAIN_MAX_W:      i32 = 500;
@@ -245,11 +248,11 @@ impl Module for RainModule {
         let line2 = d.line2.clone();
         drop(guard);
 
-        let clock_ascent = measure_text("A", CLOCK_SIZE_PX as f32, false).1;
+        let clock_ascent = measure_text("A", clock::SIZE_PX, false).1;
         let rain_ascent  = measure_text("A", SIZE_PX, false).1;
         let line_h       = rain_ascent + LINE_GAP;
 
-        let mut y = region.y + CLOCK_MARGIN + clock_ascent + LINE_GAP;
+        let mut y = region.y + clock::MARGIN + clock_ascent + LINE_GAP;
 
         for sub in word_wrap(&line1, RAIN_MAX_W) {
             draw_text(canvas, region.x + MARGIN, y, &sub, SIZE_PX, E6Color::Blue, false);

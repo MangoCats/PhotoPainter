@@ -10,7 +10,7 @@ const CURRENT_SIZE_PX: f32 = 96.0;
 const HL_SIZE_PX:      f32 = 43.0;
 const MARGIN:          i32 = 4;
 const HL_ROW_GAP:      i32 = 8;
-const ICON_SIZE:       i32 = 64;
+pub(crate) const ICON_SIZE: i32 = 64;
 const ICON_GAP:        i32 = 8;
 const ICON_BG_R:       i32 = 10;  // rounded-corner radius for icon background
 
@@ -433,7 +433,9 @@ impl Module for WeatherModule {
         let icon_x = cur_x - ICON_GAP - ICON_SIZE;
         let icon_y = top_y + (block_h - ICON_SIZE) / 2;
 
-        // Erase from icon left edge to right margin, covering battery zone if present
+        // Clear the icon + temperature number area to white before drawing.
+        // draw_icon_bg handles the 64×64 icon cell; this erase also covers the
+        // wider temperature text area and the optional battery zone above it.
         let erase_x      = icon_x.max(region.x);
         let erase_top    = if battery.is_some() { region.y } else { top_y };
         let erase_bottom = (top_y + block_h).max(hl_y + hl_total);

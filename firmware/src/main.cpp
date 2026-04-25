@@ -3,6 +3,7 @@
 #include <HTTPClient.h>
 #include <sys/time.h>
 #include <XPowersLib.h>
+#include "esp_wifi.h"
 #include "config.h"
 #include "version.h"
 
@@ -13,14 +14,22 @@
 #ifndef AVG_DISCHARGE_MA
 #define AVG_DISCHARGE_MA 6u
 #endif
+#ifndef DEBUG_NO_SLEEP
+#define DEBUG_NO_SLEEP false   // define true in config.h to keep USB alive between polls
+#endif
 
 #define LED_RED    45
 #define LED_GREEN  42
 
-// DEBUG: keeps USB alive between polls; set false for battery use
-#define DEBUG_NO_SLEEP true
+// Poll intervals shorter than this use light sleep (WiFi stays associated).
+// Longer intervals use deep sleep (net charge favours full radio-off).
+// Break-even ≈ 230 s; 270 s keeps a comfortable margin.
+#define LIGHT_SLEEP_MAX_SEC 270u
 
 // ── RTC-retained state ────────────────────────────────────────────────────────
+// RTC_DATA_ATTR is needed because two code paths use deep sleep (which wipes
+// normal RAM): long poll intervals and WiFi failure.  Light sleep preserves
+// normal RAM, but these variables must survive the deep-sleep fallbacks too.
 RTC_DATA_ATTR static char     s_etag[128]     = "";
 RTC_DATA_ATTR static uint32_t s_poll_interval = DEFAULT_POLL_INTERVAL_SEC;
 
@@ -138,6 +147,7 @@ static void epd_refresh() {
     while (digitalRead(EPD_BUSY) == LOW)  delay(10);  // wait HIGH (done ~30s)
     epd_cmd(0x02); epd_data(0x00);   // power off
     epd_wait_busy();
+    digitalWrite(EPD_PWR, LOW);      // cut external supply; panel retains image
 }
 
 // ── Solid-colour fill — no buffer required ────────────────────────────────────
@@ -194,10 +204,16 @@ static void build_battery_header(char* buf, size_t len) {
 
 // ── WiFi connect ──────────────────────────────────────────────────────────────
 static bool wifi_connect() {
-    // Tear down any prior state before starting fresh — a stuck half-connected
-    // state from a previous failed attempt would prevent reassociation otherwise.
-    WiFi.disconnect(true);   // disconnect + WIFI_OFF
+    // After light sleep the association is still live — skip the full handshake.
+    // Switch to full power mode so the modem exits DTIM sleep before we transfer.
+    if (WiFi.status() == WL_CONNECTED) {
+        esp_wifi_set_ps(WIFI_PS_NONE);
+        return true;
+    }
+    // Full reconnect: tear down any stuck half-connected state first.
+    WiFi.disconnect(true);
     WiFi.mode(WIFI_STA);
+    esp_wifi_set_ps(WIFI_PS_NONE);   // full power for minimum connect time
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
     uint32_t t0 = millis();
     while (WiFi.status() != WL_CONNECTED) {
@@ -309,6 +325,8 @@ void loop() {
         WiFi.mode(WIFI_OFF);
         blink(LED_RED, 5, 400, 400);  // error → blink ends in leds_idle()
         if (!DEBUG_NO_SLEEP) {
+            // WiFi is already down — always deep sleep on failure so setup()
+            // re-runs on wakeup and the driver starts clean.
             esp_sleep_enable_timer_wakeup((uint64_t)s_poll_interval * 1000000ULL);
             esp_deep_sleep_start();
         }
@@ -318,13 +336,20 @@ void loop() {
 
     poll_server(batt_hdr);
 
-    WiFi.disconnect(true);
-    WiFi.mode(WIFI_OFF);
+    // Drop modem to DTIM sleep between polls; leave association intact.
+    esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
     leds_idle();    // work done — dim red until next poll
 
     if (!DEBUG_NO_SLEEP) {
         esp_sleep_enable_timer_wakeup((uint64_t)s_poll_interval * 1000000ULL);
-        esp_deep_sleep_start();
+        if (s_poll_interval < LIGHT_SLEEP_MAX_SEC) {
+            esp_light_sleep_start();  // returns here when timer fires; WiFi stays associated
+            return;                   // tail of loop() — Arduino calls loop() for next poll
+        }
+        // Long interval: radio off + deep sleep is cheaper than modem sleep.
+        WiFi.disconnect(true);
+        WiFi.mode(WIFI_OFF);
+        esp_deep_sleep_start();       // never returns; setup() called on wakeup
     }
     delay(s_poll_interval * 1000);
 }

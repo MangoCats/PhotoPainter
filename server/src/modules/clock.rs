@@ -3,8 +3,8 @@ use crate::font::draw_text;
 use crate::image::{E6Canvas, E6Color};
 use super::{Module, Rect};
 
-const SIZE_PX: f32 = 24.0;  // 5% of 480 px screen height
-const MARGIN:  i32 = 4;
+pub(crate) const SIZE_PX: f32 = 24.0;  // 5% of 480 px screen height
+pub(crate) const MARGIN:  i32 = 4;
 
 fn ordinal_suffix(day: u32) -> &'static str {
     match (day % 100, day % 10) {
