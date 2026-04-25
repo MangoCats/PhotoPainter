@@ -388,20 +388,19 @@ fn draw_battery(canvas: &mut E6Canvas, batt: &BatteryInfo, right_edge: i32, top:
     draw_text(canvas, text_x, top, &pct_str, BATT_FONT_PX, E6Color::Black, false);
 
     if batt.charging {
-        // Lightning bolt: two right triangles offset and touching at their bases.
-        // Interior is 17×8 at (icon_x+1, icon_y+1); bolt is centered at column 8.
-        // Upper triangle: right angle at lower-left, tip at top (by+1, bx+6).
-        // Lower triangle: right angle at upper-right, tip at bottom (by+7, bx+10),
-        //                 offset 2 cols right; bases share row by+4 (5px combined).
-        let bx = icon_x + 1;
-        let by = icon_y + 1;
-        canvas.fill_rect(bx + 6, by + 1, 1, 1, E6Color::Yellow);
-        canvas.fill_rect(bx + 6, by + 2, 2, 1, E6Color::Yellow);
-        canvas.fill_rect(bx + 6, by + 3, 3, 1, E6Color::Yellow);
-        canvas.fill_rect(bx + 6, by + 4, 5, 1, E6Color::Yellow); // combined bases
-        canvas.fill_rect(bx + 8, by + 5, 3, 1, E6Color::Yellow);
-        canvas.fill_rect(bx + 9, by + 6, 2, 1, E6Color::Yellow);
-        canvas.fill_rect(bx +10, by + 7, 1, 1, E6Color::Yellow);
+        // Lightning bolt: two right triangles, 14×6, centered in the 17×8 interior.
+        // Upper: right angle at bottom-center (bx+7, by+2), short leg at center,
+        //        hypotenuse slanting to the left edge, tip at top-center.
+        // Lower: right angle at top-center (bx+7, by+3), short leg at center,
+        //        hypotenuse slanting to the right edge, tip at bottom-center.
+        let bx = icon_x + 2;
+        let by = icon_y + 2;
+        canvas.fill_rect(bx + 7, by,     1, 1, E6Color::Yellow); // upper tip
+        canvas.fill_rect(bx + 4, by + 1, 4, 1, E6Color::Yellow);
+        canvas.fill_rect(bx,     by + 2, 8, 1, E6Color::Yellow); // upper long base
+        canvas.fill_rect(bx + 7, by + 3, 7, 1, E6Color::Yellow); // lower long base
+        canvas.fill_rect(bx + 7, by + 4, 4, 1, E6Color::Yellow);
+        canvas.fill_rect(bx + 7, by + 5, 1, 1, E6Color::Yellow); // lower tip
     }
 }
 
