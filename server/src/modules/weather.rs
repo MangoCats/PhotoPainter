@@ -244,13 +244,13 @@ fn draw_cloud(canvas: &mut E6Canvas, ix: i32, iy: i32) {
 }
 
 fn draw_small_cloud(canvas: &mut E6Canvas, ix: i32, iy: i32) {
-    // Scaled-down two-bump cloud in lower-left of icon
-    canvas.fill_disc(ix + 16, iy + 44, 7, E6Color::Blue);
-    canvas.fill_disc(ix + 29, iy + 47, 5, E6Color::Blue);
-    canvas.fill_rect(ix +  8, iy + 47, 26, 10, E6Color::Blue);
-    canvas.fill_disc(ix + 16, iy + 44, 6, E6Color::White);
-    canvas.fill_disc(ix + 29, iy + 47, 4, E6Color::White);
-    canvas.fill_rect(ix +  9, iy + 48, 24,  9, E6Color::White);
+    // Radii sum (7+5=12) ≈ center separation (~11px) so bumps just touch, matching main cloud proportions
+    canvas.fill_disc(ix + 16, iy + 44, 8, E6Color::Blue);   // left big bump outline
+    canvas.fill_disc(ix + 27, iy + 47, 6, E6Color::Blue);   // right small bump outline
+    canvas.fill_rect(ix +  8, iy + 46, 26, 12, E6Color::Blue);
+    canvas.fill_disc(ix + 16, iy + 44, 7, E6Color::White);
+    canvas.fill_disc(ix + 27, iy + 47, 5, E6Color::White);
+    canvas.fill_rect(ix +  9, iy + 47, 24, 10, E6Color::White);
 }
 
 fn draw_sun_full(canvas: &mut E6Canvas, ix: i32, iy: i32) {
@@ -326,8 +326,8 @@ fn draw_weather_icon(canvas: &mut E6Canvas, ix: i32, iy: i32, cond: WeatherCondi
         WeatherCondition::Snow              => {
             draw_cloud(canvas, ix, iy);
             for &cx in &[18i32, 30, 42] {
-                canvas.fill_rect(ix + cx - 4, iy + 47, 9, 3, E6Color::Blue);
-                canvas.fill_rect(ix + cx - 1, iy + 43, 3, 9, E6Color::Blue);
+                canvas.fill_rect(ix + cx - 4, iy + 47, 9, 3, E6Color::White);
+                canvas.fill_rect(ix + cx - 1, iy + 43, 3, 9, E6Color::White);
             }
         }
         WeatherCondition::Fog               => {
