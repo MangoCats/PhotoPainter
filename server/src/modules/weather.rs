@@ -233,18 +233,30 @@ fn draw_icon_bg(canvas: &mut E6Canvas, ix: i32, iy: i32, is_night: bool) {
     }
 }
 
-fn draw_cloud(canvas: &mut E6Canvas, ix: i32, iy: i32, color: E6Color) {
-    canvas.fill_disc(ix + 32, iy + 22, 10, color); // center (tallest bump)
-    canvas.fill_disc(ix + 20, iy + 27,  8, color); // left bump
-    canvas.fill_disc(ix + 44, iy + 27,  8, color); // right bump
-    canvas.fill_rect(ix + 12, iy + 27, 40, 11, color); // flat base
+fn draw_cloud(canvas: &mut E6Canvas, ix: i32, iy: i32) {
+    // Blue outline: each shape expanded by 1 px
+    canvas.fill_disc(ix + 32, iy + 22, 11, E6Color::Blue);
+    canvas.fill_disc(ix + 20, iy + 27,  9, E6Color::Blue);
+    canvas.fill_disc(ix + 44, iy + 27,  9, E6Color::Blue);
+    canvas.fill_rect(ix + 11, iy + 26, 42, 13, E6Color::Blue);
+    // White fill on top
+    canvas.fill_disc(ix + 32, iy + 22, 10, E6Color::White);
+    canvas.fill_disc(ix + 20, iy + 27,  8, E6Color::White);
+    canvas.fill_disc(ix + 44, iy + 27,  8, E6Color::White);
+    canvas.fill_rect(ix + 12, iy + 27, 40, 11, E6Color::White);
 }
 
-fn draw_small_cloud(canvas: &mut E6Canvas, ix: i32, iy: i32, color: E6Color) {
-    canvas.fill_disc(ix + 22, iy + 44, 7, color);
-    canvas.fill_disc(ix + 14, iy + 48, 5, color);
-    canvas.fill_disc(ix + 30, iy + 48, 5, color);
-    canvas.fill_rect(ix +  9, iy + 48, 26, 9, color);
+fn draw_small_cloud(canvas: &mut E6Canvas, ix: i32, iy: i32) {
+    // Blue outline: each shape expanded by 1 px
+    canvas.fill_disc(ix + 22, iy + 44, 8, E6Color::Blue);
+    canvas.fill_disc(ix + 14, iy + 48, 6, E6Color::Blue);
+    canvas.fill_disc(ix + 30, iy + 48, 6, E6Color::Blue);
+    canvas.fill_rect(ix +  8, iy + 47, 28, 11, E6Color::Blue);
+    // White fill on top
+    canvas.fill_disc(ix + 22, iy + 44, 7, E6Color::White);
+    canvas.fill_disc(ix + 14, iy + 48, 5, E6Color::White);
+    canvas.fill_disc(ix + 30, iy + 48, 5, E6Color::White);
+    canvas.fill_rect(ix +  9, iy + 48, 26,  9, E6Color::White);
 }
 
 fn draw_sun_full(canvas: &mut E6Canvas, ix: i32, iy: i32) {
@@ -296,21 +308,21 @@ fn draw_weather_icon(canvas: &mut E6Canvas, ix: i32, iy: i32, cond: WeatherCondi
         WeatherCondition::ClearNight        => draw_moon_full(canvas, ix, iy, moon_cutout),
         WeatherCondition::PartlyCloudyDay   => {
             draw_sun_small(canvas, ix, iy);
-            draw_small_cloud(canvas, ix, iy, E6Color::Blue);
+            draw_small_cloud(canvas, ix, iy);
         }
         WeatherCondition::PartlyCloudyNight => {
             draw_moon_small(canvas, ix, iy, moon_cutout);
-            draw_small_cloud(canvas, ix, iy, E6Color::Blue);
+            draw_small_cloud(canvas, ix, iy);
         }
-        WeatherCondition::Cloudy            => draw_cloud(canvas, ix, iy, E6Color::Blue),
+        WeatherCondition::Cloudy            => draw_cloud(canvas, ix, iy),
         WeatherCondition::Rain              => {
-            draw_cloud(canvas, ix, iy, E6Color::Blue);
+            draw_cloud(canvas, ix, iy);
             canvas.fill_rect(ix + 20, iy + 42, 3, 9, E6Color::Blue);
             canvas.fill_rect(ix + 30, iy + 42, 3, 9, E6Color::Blue);
             canvas.fill_rect(ix + 40, iy + 42, 3, 9, E6Color::Blue);
         }
         WeatherCondition::Thunderstorm      => {
-            draw_cloud(canvas, ix, iy, E6Color::Blue);
+            draw_cloud(canvas, ix, iy);
             // Z-shaped lightning bolt
             canvas.fill_rect(ix + 28, iy + 40, 10, 3, E6Color::Yellow);
             canvas.fill_rect(ix + 28, iy + 43,  4, 9, E6Color::Yellow);
@@ -318,7 +330,7 @@ fn draw_weather_icon(canvas: &mut E6Canvas, ix: i32, iy: i32, cond: WeatherCondi
             canvas.fill_rect(ix + 22, iy + 53,  4, 8, E6Color::Yellow);
         }
         WeatherCondition::Snow              => {
-            draw_cloud(canvas, ix, iy, E6Color::Blue);
+            draw_cloud(canvas, ix, iy);
             for &cx in &[18i32, 30, 42] {
                 canvas.fill_rect(ix + cx - 4, iy + 47, 9, 3, E6Color::Blue);
                 canvas.fill_rect(ix + cx - 1, iy + 43, 3, 9, E6Color::Blue);
