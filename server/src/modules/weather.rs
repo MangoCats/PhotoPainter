@@ -389,18 +389,17 @@ fn draw_battery(canvas: &mut E6Canvas, batt: &BatteryInfo, right_edge: i32, top:
 
     if batt.charging {
         // Lightning bolt: two right triangles, 14×6, centered in the 17×8 interior.
-        // Upper: right angle at bottom-center (bx+7, by+2), short leg at center,
-        //        hypotenuse slanting to the left edge, tip at top-center.
-        // Lower: right angle at top-center (bx+7, by+3), short leg at center,
-        //        hypotenuse slanting to the right edge, tip at bottom-center.
+        // Upper: tip at top-center (bx+7), base at by+3 (8px, left half).
+        // Lower: base at by+2 (7px, right half), tip at bottom-center (bx+7).
+        // Triangles overlap at rows by+2 and by+3; those rows are drawn as unions.
         let bx = icon_x + 2;
         let by = icon_y + 2;
-        canvas.fill_rect(bx + 7, by,     1, 1, E6Color::Yellow); // upper tip
-        canvas.fill_rect(bx + 4, by + 1, 4, 1, E6Color::Yellow);
-        canvas.fill_rect(bx,     by + 2, 8, 1, E6Color::Yellow); // upper long base
-        canvas.fill_rect(bx + 7, by + 3, 7, 1, E6Color::Yellow); // lower long base
-        canvas.fill_rect(bx + 7, by + 4, 4, 1, E6Color::Yellow);
-        canvas.fill_rect(bx + 7, by + 5, 1, 1, E6Color::Yellow); // lower tip
+        canvas.fill_rect(bx + 7, by,      1,  1, E6Color::Yellow); // upper tip
+        canvas.fill_rect(bx + 5, by + 1,  3,  1, E6Color::Yellow);
+        canvas.fill_rect(bx + 3, by + 2, 11,  1, E6Color::Yellow); // upper 5 + lower 7, union
+        canvas.fill_rect(bx,     by + 3, 12,  1, E6Color::Yellow); // upper 8 + lower 5, union
+        canvas.fill_rect(bx + 7, by + 4,  3,  1, E6Color::Yellow);
+        canvas.fill_rect(bx + 7, by + 5,  1,  1, E6Color::Yellow); // lower tip
     }
 }
 
