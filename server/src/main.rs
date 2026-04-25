@@ -94,17 +94,15 @@ async fn commit_displayed(
 ) {
     let mut guard = state.displayed.write().await;
     let prev = guard.as_ref();
+    let (current_temp_f, high_f, low_f) = weather
+        .map(|w| (w.current_f, w.high_f, w.low_f))
+        .or_else(|| prev.map(|d| (d.current_temp_f, d.high_f, d.low_f)))
+        .unwrap_or((0, 0, 0));
     *guard = Some(DisplayedState {
-        refresh_time:   now,
-        current_temp_f: weather.map(|w| w.current_f)
-            .or_else(|| prev.map(|d| d.current_temp_f))
-            .unwrap_or(0),
-        high_f: weather.map(|w| w.high_f)
-            .or_else(|| prev.map(|d| d.high_f))
-            .unwrap_or(0),
-        low_f: weather.map(|w| w.low_f)
-            .or_else(|| prev.map(|d| d.low_f))
-            .unwrap_or(0),
+        refresh_time: now,
+        current_temp_f,
+        high_f,
+        low_f,
         near_rain,
         batt_pct:      batt_pct.or_else(|| prev.and_then(|d| d.batt_pct)),
         batt_charging: batt_charging.or_else(|| prev.and_then(|d| d.batt_charging)),

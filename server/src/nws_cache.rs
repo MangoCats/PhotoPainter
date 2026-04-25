@@ -3,7 +3,10 @@
 // need different URLs from that same response, so fetching it once avoids
 // a duplicate request on every cold start.
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use crate::location;
+
+const TTL: Duration = Duration::from_secs(24 * 3600);
 
 #[derive(Clone)]
 pub struct NwsUrls {
@@ -13,13 +16,25 @@ pub struct NwsUrls {
     pub observation_stations: String,
 }
 
+struct Cached {
+    urls: NwsUrls,
+    at:   Instant,
+}
+
 pub struct NwsPointsCache {
-    cached: Mutex<Option<NwsUrls>>,
+    inner: Mutex<Option<Cached>>,
 }
 
 impl NwsPointsCache {
     pub fn new() -> Self {
-        Self { cached: Mutex::new(None) }
+        Self { inner: Mutex::new(None) }
+    }
+
+    /// Drop the cached URLs so the next call re-fetches from NWS.
+    /// Call this when a downstream request returns 404 (grid cell reassigned).
+    #[allow(dead_code)]
+    pub fn invalidate(&self) {
+        *self.inner.lock().unwrap() = None;
     }
 
     pub async fn get(
@@ -27,8 +42,11 @@ impl NwsPointsCache {
         client: &reqwest::Client,
     ) -> Result<NwsUrls, Box<dyn std::error::Error + Send + Sync>> {
         {
-            if let Some(u) = self.cached.lock().unwrap().as_ref() {
-                return Ok(u.clone());
+            if let Some(c) = self.inner.lock().unwrap().as_ref() {
+                if c.at.elapsed() < TTL {
+                    return Ok(c.urls.clone());
+                }
+                tracing::info!("NWS points cache expired, re-fetching");
             }
         }
         let url  = format!(
@@ -43,7 +61,7 @@ impl NwsPointsCache {
             forecast_grid:        props["forecastGridData"].as_str().ok_or("missing forecastGridData url")?.to_string(),
             observation_stations: props["observationStations"].as_str().ok_or("missing observationStations url")?.to_string(),
         };
-        *self.cached.lock().unwrap() = Some(urls.clone());
+        *self.inner.lock().unwrap() = Some(Cached { urls: urls.clone(), at: Instant::now() });
         Ok(urls)
     }
 }

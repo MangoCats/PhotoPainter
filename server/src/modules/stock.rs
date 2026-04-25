@@ -1,4 +1,5 @@
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use crate::font::{draw_text, measure_text};
 use crate::image::{E6Canvas, E6Color, SCREEN_W, SCREEN_H};
 use crate::stock_creds::API_KEY;
@@ -8,6 +9,7 @@ const DIVIDER_W:   i32 = 5;
 const MAX_FONT:    f32 = 43.0;
 const MIN_FONT:    f32 = 10.0;
 const H_PAD:       i32 = 4;
+const STALE_AFTER: Duration = Duration::from_secs(2 * 3600);
 
 #[derive(Clone)]
 struct Quote {
@@ -17,14 +19,20 @@ struct Quote {
 }
 
 pub struct StockModule {
-    quotes:  Mutex<Vec<Quote>>,
-    tickers: Vec<String>,
-    client:  reqwest::Client,
+    quotes:       Mutex<Vec<Quote>>,
+    tickers:      Vec<String>,
+    client:       reqwest::Client,
+    last_updated: Mutex<Option<Instant>>,
 }
 
 impl StockModule {
     pub fn new(tickers: Vec<String>, client: reqwest::Client) -> Self {
-        Self { quotes: Mutex::new(Vec::new()), tickers, client }
+        Self {
+            quotes:       Mutex::new(Vec::new()),
+            tickers,
+            client,
+            last_updated: Mutex::new(None),
+        }
     }
 
     pub async fn refresh(&self) {
@@ -37,6 +45,7 @@ impl StockModule {
         }
         if !results.is_empty() {
             *self.quotes.lock().unwrap() = results;
+            *self.last_updated.lock().unwrap() = Some(Instant::now());
         }
     }
 
@@ -66,6 +75,10 @@ impl StockModule {
         let quotes = self.quotes.lock().unwrap().clone();
         if quotes.is_empty() { return; }
 
+        let stale = self.last_updated.lock().unwrap()
+            .map(|t| t.elapsed() > STALE_AFTER)
+            .unwrap_or(true);
+
         let n           = quotes.len() as i32;
         let total_div_w = (n - 1) * DIVIDER_W;
         let base_sec_w  = (SCREEN_W - total_div_w) / n;
@@ -73,7 +86,7 @@ impl StockModule {
 
         // Choose font size so the widest label fits within a section
         let longest = quotes.iter()
-            .map(|q| make_label(q))
+            .map(|q| make_label(q, stale))
             .max_by_key(|s| measure_text(s, MAX_FONT, false).0)
             .unwrap_or_default();
 
@@ -98,7 +111,7 @@ impl StockModule {
             let bg    = if q.price >= q.open { E6Color::Green } else { E6Color::Red };
             canvas.fill_rect(x, strip_y, sec_w, STRIP_H, bg);
 
-            let txt     = make_label(q);
+            let txt     = make_label(q, stale);
             let (tw, _) = measure_text(&txt, font_size, false);
             let tx      = x + (sec_w - tw) / 2;
             draw_text(canvas, tx, text_y, &txt, font_size, E6Color::White, false);
@@ -108,6 +121,11 @@ impl StockModule {
     }
 }
 
-fn make_label(q: &Quote) -> String {
-    format!("{} {:.2}", q.symbol, q.price)
+// Tilde prefix signals the price may not be current (market closed or refresh failed).
+fn make_label(q: &Quote, stale: bool) -> String {
+    if stale {
+        format!("{} ~{:.2}", q.symbol, q.price)
+    } else {
+        format!("{} {:.2}", q.symbol, q.price)
+    }
 }

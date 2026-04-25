@@ -5,14 +5,13 @@ use crate::font::{draw_text, measure_text};
 use crate::image::{E6Canvas, E6Color};
 use crate::gcal_creds::{CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN, CALENDAR_IDS};
 use super::{Module, Rect};
+use super::rain;
 
 const SIZE_PX:  f32 = 28.0;
 const MARGIN:   i32 = 8;
 const LINE_GAP: i32 = 4;
-// Y_START: below the clock line (margin=4, size=24px → ascent≈19) and
-// worst-case rain text (starts y≈27, up to 4 lines × line_h≈26 → bottom≈131).
-// GCal starts slightly before worst-case rain end; actual overlap is rare.
-const Y_START: i32 = 128;
+const Y_START:  i32 = rain::GCAL_Y_START;
+const STALE_AFTER: Duration = Duration::from_secs(3600);
 
 struct TokenCache {
     token:      String,
@@ -27,20 +26,22 @@ struct CalEvent {
 }
 
 pub struct GCalModule {
-    events: Mutex<Vec<CalEvent>>,
-    token:  Mutex<TokenCache>,
-    client: reqwest::Client,
+    events:  Mutex<Vec<CalEvent>>,
+    token:   Mutex<TokenCache>,
+    client:  reqwest::Client,
+    last_ok: Mutex<Option<Instant>>,
 }
 
 impl GCalModule {
     pub fn new(client: reqwest::Client) -> Self {
         Self {
-            events: Mutex::new(Vec::new()),
-            token:  Mutex::new(TokenCache {
+            events:  Mutex::new(Vec::new()),
+            token:   Mutex::new(TokenCache {
                 token:      String::new(),
                 expires_at: Instant::now(),  // already expired → forces first refresh
             }),
             client,
+            last_ok: Mutex::new(None),
         }
     }
 
@@ -70,8 +71,11 @@ impl GCalModule {
 
     pub async fn refresh(&self) {
         match self.fetch().await {
-            Ok(events) => *self.events.lock().unwrap() = events,
-            Err(e)     => tracing::warn!("gcal fetch failed: {e}"),
+            Ok(events) => {
+                *self.events.lock().unwrap() = events;
+                *self.last_ok.lock().unwrap() = Some(Instant::now());
+            }
+            Err(e) => tracing::warn!("gcal fetch failed: {e}"),
         }
     }
 
@@ -152,11 +156,22 @@ fn form_encode(s: &str)    -> String { encode_bytes(s, true)  }
 impl Module for GCalModule {
     fn render(&self, canvas: &mut E6Canvas, region: Rect) {
         let events = self.events.lock().unwrap().clone();
+        let stale  = self.last_ok.lock().unwrap()
+            .map(|t| t.elapsed() > STALE_AFTER)
+            .unwrap_or(true);
         let ascent = measure_text("A", SIZE_PX, false).1;
         let line_h = ascent + LINE_GAP;
         // max_y derived from region.height, leaving 2px above the stock strip
         let max_y  = region.y + region.height - 2;
         let mut y  = region.y + Y_START;
+
+        if stale {
+            if y + ascent <= max_y {
+                canvas.fill_rect(region.x, y, region.width, line_h, E6Color::Red);
+                draw_text(canvas, region.x + MARGIN, y, "(calendar offline)", SIZE_PX, E6Color::White, false);
+                y += line_h;
+            }
+        }
 
         if events.is_empty() {
             if y + ascent <= max_y {
