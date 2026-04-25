@@ -25,6 +25,7 @@ use nws_cache::NwsPointsCache;
 use modules::battery::parse_battery_header;
 use modules::clock::ClockModule;
 use modules::gcal::GCalModule;
+use modules::icon_matrix::IconMatrixModule;
 use modules::rain::{RainModule, NearTermRain};
 use modules::stock::StockModule;
 use modules::weather::{WeatherModule, WeatherData};
@@ -72,13 +73,14 @@ fn is_significant_change(
 // ── Shared state ──────────────────────────────────────────────────────────────
 
 struct AppState {
-    image:      RwLock<RenderedImage>,
-    fw_version: RwLock<String>,
-    weather:    WeatherModule,
-    rain:       RainModule,
-    gcal:       GCalModule,
-    stock:      StockModule,
-    displayed:  RwLock<Option<DisplayedState>>,
+    image:             RwLock<RenderedImage>,
+    fw_version:        RwLock<String>,
+    weather:           WeatherModule,
+    rain:              RainModule,
+    gcal:              GCalModule,
+    stock:             StockModule,
+    displayed:         RwLock<Option<DisplayedState>>,
+    icon_matrix_mode:  bool,
 }
 type SharedState = Arc<AppState>;
 
@@ -112,20 +114,23 @@ async fn commit_displayed(
 // ── Render helper ─────────────────────────────────────────────────────────────
 
 async fn do_render(state: &AppState, show_version: bool) -> RenderedImage {
-    let fw_ver = state.fw_version.read().await.clone();
-    let clock  = ClockModule;
-    render(
+    let fw_ver     = state.fw_version.read().await.clone();
+    let clock      = ClockModule;
+    let icon_mtrx  = IconMatrixModule;
+    let modules: &[(&dyn crate::modules::Module, _)] = if state.icon_matrix_mode {
+        &[
+            (&clock,      full_screen()),
+            (&icon_mtrx,  gcal_region()),
+        ]
+    } else {
         &[
             (&clock,         full_screen()),
             (&state.rain,    full_screen()),
             (&state.weather, full_screen()),
             (&state.gcal,    gcal_region()),
-        ],
-        SERVER_VERSION,
-        &fw_ver,
-        show_version,
-        &state.stock,
-    )
+        ]
+    };
+    render(modules, SERVER_VERSION, &fw_ver, show_version, &state.stock)
 }
 
 // ── Ticker config ─────────────────────────────────────────────────────────────
@@ -279,6 +284,11 @@ async fn main() {
     let gcal    = GCalModule::new(client.clone());
     let stock   = StockModule::new(tickers, client);
 
+    let icon_matrix_mode = std::env::var("ICON_MATRIX").is_ok();
+    if icon_matrix_mode {
+        tracing::info!("ICON_MATRIX mode: gcal replaced with icon grid");
+    }
+
     let state: SharedState = Arc::new(AppState {
         image:      RwLock::new(RenderedImage { packed: Vec::new(), etag: String::new() }),
         fw_version: RwLock::new("unknown".to_string()),
@@ -287,6 +297,7 @@ async fn main() {
         gcal,
         stock,
         displayed:  RwLock::new(None),
+        icon_matrix_mode,
     });
 
     // Initial render shows the version bar once; render_loop always shows the stock strip

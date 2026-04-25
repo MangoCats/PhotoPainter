@@ -12,6 +12,7 @@ const MARGIN:          i32 = 4;
 const HL_ROW_GAP:      i32 = 8;
 const ICON_SIZE:       i32 = 64;
 const ICON_GAP:        i32 = 8;
+const ICON_BG_R:       i32 = 10;  // rounded-corner radius for icon background
 
 const BATT_FONT_PX:   f32 = 14.0;
 const BATT_TOP_PAD:   i32 = 2;
@@ -199,6 +200,39 @@ fn parse_condition(icon_url: &str) -> WeatherCondition {
 // All coordinates are relative to the icon top-left (ix, iy).
 // Icon box is ICON_SIZE × ICON_SIZE (64×64).
 
+/// Returns the inclusive x range [x0, x1) for row `dy` of a rounded rectangle
+/// of `size × size` with corner radius `r`.
+fn icon_bg_x_range(dy: i32, size: i32, r: i32) -> (i32, i32) {
+    let diff = if dy < r {
+        (r - dy) as f64
+    } else if dy >= size - r {
+        (dy - (size - 1 - r)) as f64
+    } else {
+        return (0, size);
+    };
+    let dx = ((r * r) as f64 - diff * diff).max(0.0).sqrt() as i32;
+    (r - dx, size - r + dx)
+}
+
+/// Draws a rounded-rectangle background for the icon area.
+/// Daytime: white base + 25% blue dither.  Nighttime: black base + 25% blue dither.
+fn draw_icon_bg(canvas: &mut E6Canvas, ix: i32, iy: i32, is_night: bool) {
+    let bg = if is_night { E6Color::Black } else { E6Color::White };
+    for dy in 0..ICON_SIZE {
+        let (x0, x1) = icon_bg_x_range(dy, ICON_SIZE, ICON_BG_R);
+        if x0 >= x1 { continue; }
+        canvas.fill_rect(ix + x0, iy + dy, x1 - x0, 1, bg);
+        // 25% blue dither: every even row, every even column
+        if dy % 2 == 0 {
+            let mut x = if x0 % 2 == 0 { x0 } else { x0 + 1 };
+            while x < x1 {
+                canvas.fill_rect(ix + x, iy + dy, 1, 1, E6Color::Blue);
+                x += 2;
+            }
+        }
+    }
+}
+
 fn draw_cloud(canvas: &mut E6Canvas, ix: i32, iy: i32, color: E6Color) {
     canvas.fill_disc(ix + 32, iy + 22, 10, color); // center (tallest bump)
     canvas.fill_disc(ix + 20, iy + 27,  8, color); // left bump
@@ -237,26 +271,35 @@ fn draw_sun_small(canvas: &mut E6Canvas, ix: i32, iy: i32) {
     canvas.fill_rect(ix + 35, iy +  9, 3, 3, E6Color::Yellow); // NW
 }
 
-fn draw_moon_full(canvas: &mut E6Canvas, ix: i32, iy: i32) {
+fn draw_moon_full(canvas: &mut E6Canvas, ix: i32, iy: i32, cutout: E6Color) {
     canvas.fill_disc(ix + 29, iy + 30, 15, E6Color::Yellow);
-    canvas.fill_disc(ix + 37, iy + 24, 12, E6Color::White);  // carve crescent
+    canvas.fill_disc(ix + 37, iy + 24, 12, cutout);  // carve crescent
 }
 
-fn draw_moon_small(canvas: &mut E6Canvas, ix: i32, iy: i32) {
+fn draw_moon_small(canvas: &mut E6Canvas, ix: i32, iy: i32, cutout: E6Color) {
     canvas.fill_disc(ix + 44, iy + 19, 10, E6Color::Yellow);
-    canvas.fill_disc(ix + 50, iy + 14,  8, E6Color::White);  // carve crescent
+    canvas.fill_disc(ix + 50, iy + 14,  8, cutout);  // carve crescent
+}
+
+pub(crate) fn draw_condition_icon(canvas: &mut E6Canvas, ix: i32, iy: i32, cond: WeatherCondition) {
+    draw_weather_icon(canvas, ix, iy, cond);
 }
 
 fn draw_weather_icon(canvas: &mut E6Canvas, ix: i32, iy: i32, cond: WeatherCondition) {
+    let is_night    = matches!(cond, WeatherCondition::ClearNight | WeatherCondition::PartlyCloudyNight);
+    let moon_cutout = if is_night { E6Color::Black } else { E6Color::White };
+
+    draw_icon_bg(canvas, ix, iy, is_night);
+
     match cond {
         WeatherCondition::ClearDay          => draw_sun_full(canvas, ix, iy),
-        WeatherCondition::ClearNight        => draw_moon_full(canvas, ix, iy),
+        WeatherCondition::ClearNight        => draw_moon_full(canvas, ix, iy, moon_cutout),
         WeatherCondition::PartlyCloudyDay   => {
             draw_sun_small(canvas, ix, iy);
             draw_small_cloud(canvas, ix, iy, E6Color::Blue);
         }
         WeatherCondition::PartlyCloudyNight => {
-            draw_moon_small(canvas, ix, iy);
+            draw_moon_small(canvas, ix, iy, moon_cutout);
             draw_small_cloud(canvas, ix, iy, E6Color::Blue);
         }
         WeatherCondition::Cloudy            => draw_cloud(canvas, ix, iy, E6Color::Blue),
