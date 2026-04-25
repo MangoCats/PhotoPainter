@@ -17,6 +17,7 @@ use axum::{
     routing::get,
     Router,
 };
+use crate::image::{SCREEN_W, SCREEN_H};
 use tokio::sync::RwLock;
 use tracing_subscriber::{fmt, EnvFilter};
 use chrono::{DateTime, Local};
@@ -263,6 +264,84 @@ fn add_common_headers(headers: &mut HeaderMap, etag: &str, poll_secs: u64) {
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
 }
 
+// ── Browser preview server (port 17654) ──────────────────────────────────────
+
+// E6 nibble → (R, G, B).  Indices 4, 7–15 are unused; they map to black.
+const E6_PALETTE: [(u8, u8, u8); 16] = {
+    let mut p = [(0u8, 0u8, 0u8); 16];
+    p[0x1] = (0xFF, 0xFF, 0xFF); // White
+    p[0x2] = (0xFF, 0xD7, 0x00); // Yellow
+    p[0x3] = (0xCC, 0x22, 0x00); // Red
+    p[0x5] = (0x00, 0x55, 0xCC); // Blue
+    p[0x6] = (0x00, 0x99, 0x00); // Green
+    p
+};
+
+fn packed_to_png(packed: &[u8]) -> Vec<u8> {
+    let mut rgb = Vec::with_capacity((SCREEN_W * SCREEN_H * 3) as usize);
+    for &byte in packed {
+        let (r, g, b) = E6_PALETTE[(byte >> 4) as usize];
+        rgb.push(r); rgb.push(g); rgb.push(b);
+        let (r, g, b) = E6_PALETTE[(byte & 0x0F) as usize];
+        rgb.push(r); rgb.push(g); rgb.push(b);
+    }
+    let mut out = Vec::new();
+    let mut encoder = png::Encoder::new(&mut out, SCREEN_W as u32, SCREEN_H as u32);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.write_header().unwrap()
+        .write_image_data(&rgb).unwrap();
+    out
+}
+
+static PREVIEW_HTML: &str = r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PhotoPainter Preview</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #111; }
+  img { width: 100%; height: auto; display: block; image-rendering: pixelated; }
+</style>
+</head>
+<body>
+<img id="frame" src="/image.png">
+<script>
+  setInterval(function() {
+    document.getElementById("frame").src = "/image.png?" + Date.now();
+  }, 60000);
+</script>
+</body>
+</html>"#;
+
+async fn preview_page() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/html; charset=utf-8"),
+         (header::CACHE_CONTROL, "no-store")],
+        PREVIEW_HTML,
+    )
+}
+
+async fn preview_image(State(state): State<SharedState>) -> impl IntoResponse {
+    let png = packed_to_png(&state.image.read().await.packed);
+    (
+        [(header::CONTENT_TYPE, "image/png"),
+         (header::CACHE_CONTROL, "no-store")],
+        png,
+    )
+}
+
+async fn run_preview_server(state: SharedState) {
+    let app = Router::new()
+        .route("/",          get(preview_page))
+        .route("/image.png", get(preview_image))
+        .with_state(state);
+    let addr = "0.0.0.0:17654";
+    tracing::info!("preview server listening on {addr}");
+    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+    axum::serve(listener, app).await.unwrap();
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 #[tokio::main]
@@ -303,6 +382,7 @@ async fn main() {
     *state.image.write().await = initial;
 
     tokio::spawn(render_loop(Arc::clone(&state)));
+    tokio::spawn(run_preview_server(Arc::clone(&state)));
 
     let app = Router::new()
         .route("/api/image", get(get_image))
