@@ -21,7 +21,7 @@ use axum::{
 use crate::image::{SCREEN_W, SCREEN_H};
 use tokio::sync::RwLock;
 use tracing_subscriber::{fmt, EnvFilter};
-use chrono::{DateTime, Local};
+use chrono::{Datelike, DateTime, Local, Timelike, Weekday};
 
 use nws_cache::NwsPointsCache;
 use modules::bank::BankModule;
@@ -32,7 +32,7 @@ use modules::icon_matrix::IconMatrixModule;
 use modules::rain::{RainModule, NearTermRain};
 use modules::stock::StockModule;
 use modules::weather::{WeatherModule, WeatherData};
-use renderer::{render, full_screen, gcal_region, gcal_below_bank_region, RenderedImage};
+use renderer::{render, full_screen, gcal_region, gcal_below_bank_region, weekend_gcal_region, weekend_gcal_below_bank_region, RenderedImage};
 
 const SERVER_VERSION: &str = env!("GIT_VERSION");
 
@@ -117,16 +117,17 @@ async fn commit_displayed(
 // ── Render helper ─────────────────────────────────────────────────────────────
 
 async fn do_render(state: &AppState, show_version: bool) -> RenderedImage {
-    let fw_ver    = state.fw_version.read().await.clone();
-    let clock     = ClockModule;
+    let fw_ver  = state.fw_version.read().await.clone();
+    let clock   = ClockModule;
     let icon_mtrx = IconMatrixModule;
+    let weekend = matches!(Local::now().weekday(), Weekday::Sat | Weekday::Sun);
 
     if state.icon_matrix_mode {
         let modules: &[(&dyn crate::modules::Module, _)] = &[
             (&clock,      full_screen()),
-            (&icon_mtrx,  gcal_region()),
+            (&icon_mtrx,  if weekend { weekend_gcal_region() } else { gcal_region() }),
         ];
-        return render(modules, SERVER_VERSION, &fw_ver, show_version, &state.stock);
+        return render(modules, SERVER_VERSION, &fw_ver, show_version, &state.stock, weekend);
     }
 
     if state.bank_mode {
@@ -135,19 +136,19 @@ async fn do_render(state: &AppState, show_version: bool) -> RenderedImage {
             (&clock,         full_screen()),
             (&state.rain,    full_screen()),
             (&state.weather, full_screen()),
-            (&state.bank,    gcal_region()),
-            (&state.gcal,    gcal_below_bank_region(bank_h)),
+            (&state.bank,    if weekend { weekend_gcal_region() } else { gcal_region() }),
+            (&state.gcal,    if weekend { weekend_gcal_below_bank_region(bank_h) } else { gcal_below_bank_region(bank_h) }),
         ];
-        return render(modules, SERVER_VERSION, &fw_ver, show_version, &state.stock);
+        return render(modules, SERVER_VERSION, &fw_ver, show_version, &state.stock, weekend);
     }
 
     let modules: &[(&dyn crate::modules::Module, _)] = &[
         (&clock,         full_screen()),
         (&state.rain,    full_screen()),
         (&state.weather, full_screen()),
-        (&state.gcal,    gcal_region()),
+        (&state.gcal,    if weekend { weekend_gcal_region() } else { gcal_region() }),
     ];
-    render(modules, SERVER_VERSION, &fw_ver, show_version, &state.stock)
+    render(modules, SERVER_VERSION, &fw_ver, show_version, &state.stock, weekend)
 }
 
 // ── Ticker config ─────────────────────────────────────────────────────────────
@@ -175,7 +176,8 @@ async fn render_loop(state: SharedState) {
         } else {
             tokio::join!(state.weather.refresh(), state.rain.refresh(), state.gcal.refresh());
         }
-        let now       = Local::now();
+        let now     = Local::now();
+        let weekend = matches!(now.weekday(), Weekday::Sat | Weekday::Sun);
         let weather   = state.weather.peek();
         let near_rain = state.rain.peek_near();
         let battery   = state.weather.peek_battery();
@@ -191,7 +193,7 @@ async fn render_loop(state: SharedState) {
         };
 
         if should_render {
-            state.stock.refresh().await;
+            if !weekend { state.stock.refresh().await; }
             let image = do_render(&state, false).await;
             *state.image.write().await = image;
             commit_displayed(&state, now, weather, near_rain, batt_pct, batt_charging).await;
@@ -264,7 +266,23 @@ async fn get_image(
         .unwrap_or("");
 
     let mut headers = HeaderMap::new();
-    add_common_headers(&mut headers, &etag_value, 60);
+    let now  = Local::now();
+    let h    = now.hour();
+    let m    = now.minute();
+    let s    = now.second();
+    let poll_secs: u64 = if h >= 23 || h < 5 || (h == 5 && m < 45) {
+        // 11:00pm – 5:44:59am: deep-night long poll
+        3600
+    } else if h > 6 || (h == 6 && m >= 45) {
+        // 6:45am – 10:59pm: normal fast poll
+        60
+    } else {
+        // 5:45am – 6:44:59am: count down to 6:45am wake-up
+        let now_secs:  u32 = h * 3600 + m * 60 + s;
+        let wake_secs: u32 = 6 * 3600 + 45 * 60; // 24300
+        u64::from(wake_secs.saturating_sub(now_secs)).max(1)
+    };
+    add_common_headers(&mut headers, &etag_value, poll_secs);
 
     if client_etag == etag_value {
         tracing::info!("GET /api/image → 304 (device: {device_id})");
