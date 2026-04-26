@@ -13,6 +13,9 @@ const LINE_GAP: i32 = 4;
 const Y_START:  i32 = rain::GCAL_Y_START;
 const STALE_AFTER: Duration = Duration::from_secs(3600);
 
+const AFTER_6PM_MINUTES:  i32 = 18 * 60;       // 6:00 PM
+const HIDE_BEFORE_MINUTES: i32 = 12 * 60 + 1;  // 12:01 PM
+
 struct TokenCache {
     token:      String,
     expires_at: Instant,
@@ -26,17 +29,19 @@ struct CalEvent {
 }
 
 pub struct GCalModule {
-    events:  Mutex<Vec<CalEvent>>,
-    token:   Mutex<TokenCache>,
-    client:  reqwest::Client,
-    last_ok: Mutex<Option<Instant>>,
+    today:    Mutex<Vec<CalEvent>>,
+    tomorrow: Mutex<Vec<CalEvent>>,
+    token:    Mutex<TokenCache>,
+    client:   reqwest::Client,
+    last_ok:  Mutex<Option<Instant>>,
 }
 
 impl GCalModule {
     pub fn new(client: reqwest::Client) -> Self {
         Self {
-            events:  Mutex::new(Vec::new()),
-            token:   Mutex::new(TokenCache {
+            today:    Mutex::new(Vec::new()),
+            tomorrow: Mutex::new(Vec::new()),
+            token:    Mutex::new(TokenCache {
                 token:      String::new(),
                 expires_at: Instant::now(),  // already expired → forces first refresh
             }),
@@ -71,22 +76,44 @@ impl GCalModule {
 
     pub async fn refresh(&self) {
         match self.fetch().await {
-            Ok(events) => {
-                *self.events.lock().unwrap() = events;
-                *self.last_ok.lock().unwrap() = Some(Instant::now());
+            Ok((today, tomorrow)) => {
+                *self.today.lock().unwrap()    = today;
+                *self.tomorrow.lock().unwrap() = tomorrow;
+                *self.last_ok.lock().unwrap()  = Some(Instant::now());
             }
             Err(e) => tracing::warn!("gcal fetch failed: {e}"),
         }
     }
 
-    async fn fetch(&self) -> Result<Vec<CalEvent>, Box<dyn std::error::Error + Send + Sync>> {
-        let token    = self.access_token().await?;
-        let now      = Local::now();
-        let today    = now.date_naive();
-        let tomorrow = today.succ_opt().unwrap_or(today);
-        let tz       = now.format("%:z").to_string();
-        let time_min = format!("{}T00:00:00{tz}", today.format("%Y-%m-%d"));
-        let time_max = format!("{}T00:00:00{tz}", tomorrow.format("%Y-%m-%d"));
+    async fn fetch(&self) -> Result<(Vec<CalEvent>, Vec<CalEvent>), Box<dyn std::error::Error + Send + Sync>> {
+        let token     = self.access_token().await?;
+        let now       = Local::now();
+        let today     = now.date_naive();
+        let tomorrow  = today.succ_opt().unwrap_or(today);
+        let day_after = tomorrow.succ_opt().unwrap_or(tomorrow);
+        let tz        = now.format("%:z").to_string();
+
+        let today_events    = self.fetch_range(&token,
+            &today.format("%Y-%m-%d").to_string(),
+            &tomorrow.format("%Y-%m-%d").to_string(),
+            &tz).await?;
+        let tomorrow_events = self.fetch_range(&token,
+            &tomorrow.format("%Y-%m-%d").to_string(),
+            &day_after.format("%Y-%m-%d").to_string(),
+            &tz).await?;
+
+        Ok((today_events, tomorrow_events))
+    }
+
+    async fn fetch_range(
+        &self,
+        token:         &str,
+        date_str:      &str,
+        next_date_str: &str,
+        tz:            &str,
+    ) -> Result<Vec<CalEvent>, Box<dyn std::error::Error + Send + Sync>> {
+        let time_min = format!("{date_str}T00:00:00{tz}");
+        let time_max = format!("{next_date_str}T00:00:00{tz}");
 
         let mut all: Vec<CalEvent> = Vec::new();
 
@@ -103,7 +130,7 @@ impl GCalModule {
                     ("singleEvents", "true"),
                     ("orderBy",      "startTime"),
                 ])
-                .bearer_auth(&token)
+                .bearer_auth(token)
                 .send().await?.json().await?;
 
             let Some(items) = resp["items"].as_array() else { continue };
@@ -129,9 +156,7 @@ impl GCalModule {
             }
         }
 
-        // All-day events (sort_key = -1) sort first, then chronological
         all.sort_by_key(|e| e.sort_key);
-        // Remove exact duplicates that appear across multiple calendars
         all.dedup_by(|a, b| a.summary == b.summary && a.sort_key == b.sort_key);
         Ok(all)
     }
@@ -155,7 +180,8 @@ fn form_encode(s: &str)    -> String { encode_bytes(s, true)  }
 
 impl Module for GCalModule {
     fn render(&self, canvas: &mut E6Canvas, region: Rect) {
-        let events = self.events.lock().unwrap().clone();
+        let today_events    = self.today.lock().unwrap().clone();
+        let tomorrow_events = self.tomorrow.lock().unwrap().clone();
         let stale  = self.last_ok.lock().unwrap()
             .map(|t| t.elapsed() > STALE_AFTER)
             .unwrap_or(true);
@@ -173,7 +199,16 @@ impl Module for GCalModule {
             }
         }
 
-        if events.is_empty() {
+        let now             = Local::now();
+        let current_minutes = now.hour() as i32 * 60 + now.minute() as i32;
+        let after_6pm       = current_minutes >= AFTER_6PM_MINUTES;
+
+        // After 6pm: hide timed events that started before 12:01pm
+        let today_visible: Vec<&CalEvent> = today_events.iter()
+            .filter(|e| !(after_6pm && e.sort_key >= 0 && e.sort_key < HIDE_BEFORE_MINUTES))
+            .collect();
+
+        if today_visible.is_empty() && tomorrow_events.is_empty() {
             if y + ascent <= max_y {
                 canvas.fill_rect(region.x, y, region.width, line_h, E6Color::Black);
                 draw_text(canvas, region.x + MARGIN, y, "No events today.", SIZE_PX, E6Color::White, false);
@@ -181,11 +216,9 @@ impl Module for GCalModule {
             return;
         }
 
-        let now             = Local::now();
-        let current_minutes = now.hour() as i32 * 60 + now.minute() as i32;
-        let mut found_next  = false;
+        let mut found_next = false;
 
-        for event in &events {
+        for event in &today_visible {
             if y + ascent > max_y { break; }
 
             // Color scheme:
@@ -204,6 +237,16 @@ impl Module for GCalModule {
             let text = format!("{}  {}", event.start_display, event.summary);
             canvas.fill_rect(region.x, y, region.width, line_h, bg_color);
             draw_text(canvas, region.x + MARGIN, y, &text, SIZE_PX, text_color, false);
+            y += line_h;
+        }
+
+        // Tomorrow's events: black text on green background
+        for event in &tomorrow_events {
+            if y + ascent > max_y { break; }
+
+            let text = format!("{}  {}", event.start_display, event.summary);
+            canvas.fill_rect(region.x, y, region.width, line_h, E6Color::Green);
+            draw_text(canvas, region.x + MARGIN, y, &text, SIZE_PX, E6Color::Black, false);
             y += line_h;
         }
     }
