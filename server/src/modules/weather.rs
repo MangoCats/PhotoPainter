@@ -446,7 +446,7 @@ impl Module for WeatherModule {
         let hl_y = (top_y + (block_h - hl_total) / 2).max(batt_zone_bottom);
 
         let icon_x = cur_x - ICON_GAP - ICON_SIZE;
-        let icon_y = top_y + (block_h - ICON_SIZE) / 2;
+        let icon_y = top_y + (block_h - ICON_SIZE) / 2 + 10;
 
         // Clear the icon + temperature number area to white before drawing.
         // draw_icon_bg handles the 64×64 icon cell; this erase also covers the
