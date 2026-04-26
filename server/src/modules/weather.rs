@@ -10,9 +10,9 @@ const CURRENT_SIZE_PX: f32 = 96.0;
 const HL_SIZE_PX:      f32 = 43.0;
 const MARGIN:          i32 = 4;
 const HL_ROW_GAP:      i32 = 0;
-pub(crate) const ICON_SIZE: i32 = 64;
+pub(crate) const ICON_SIZE: i32 = 84;
 const ICON_GAP:        i32 = 8;
-const ICON_BG_R:       i32 = 10;  // rounded-corner radius for icon background
+const ICON_BG_R:       i32 = 13;  // rounded-corner radius for icon background
 
 const BATT_FONT_PX:   f32 = 14.0;
 const BATT_TOP_PAD:   i32 = 2;
@@ -235,67 +235,67 @@ fn draw_icon_bg(canvas: &mut E6Canvas, ix: i32, iy: i32, is_night: bool) {
 
 fn draw_cloud(canvas: &mut E6Canvas, ix: i32, iy: i32) {
     // Two-bump cloud: large left, small right, wide body — blue outline then white fill
-    canvas.fill_disc(ix + 21, iy + 22, 13, E6Color::Blue);  // left big bump outline
-    canvas.fill_disc(ix + 41, iy + 28, 10, E6Color::Blue);  // right small bump outline
-    canvas.fill_rect(ix +  7, iy + 26, 50, 14, E6Color::Blue); // body outline
-    canvas.fill_disc(ix + 21, iy + 22, 12, E6Color::White);
-    canvas.fill_disc(ix + 41, iy + 28,  9, E6Color::White);
-    canvas.fill_rect(ix +  8, iy + 27, 48, 13, E6Color::White);
+    canvas.fill_disc(ix + 28, iy + 29, 17, E6Color::Blue);  // left big bump outline
+    canvas.fill_disc(ix + 54, iy + 37, 13, E6Color::Blue);  // right small bump outline
+    canvas.fill_rect(ix +  9, iy + 34, 66, 18, E6Color::Blue); // body outline
+    canvas.fill_disc(ix + 28, iy + 29, 16, E6Color::White);
+    canvas.fill_disc(ix + 54, iy + 37, 12, E6Color::White);
+    canvas.fill_rect(ix + 10, iy + 35, 63, 17, E6Color::White);
 }
 
 fn draw_small_cloud(canvas: &mut E6Canvas, ix: i32, iy: i32) {
-    // Radii sum (7+5=12) ≈ center separation (~11px) so bumps just touch, matching main cloud proportions
-    canvas.fill_disc(ix + 16, iy + 44, 8, E6Color::Blue);   // left big bump outline
-    canvas.fill_disc(ix + 27, iy + 47, 6, E6Color::Blue);   // right small bump outline
-    canvas.fill_rect(ix +  8, iy + 46, 26, 12, E6Color::Blue);
-    canvas.fill_disc(ix + 16, iy + 44, 7, E6Color::White);
-    canvas.fill_disc(ix + 27, iy + 47, 5, E6Color::White);
-    canvas.fill_rect(ix +  9, iy + 47, 24, 10, E6Color::White);
+    // Radii sum (11+8=19) ≈ center separation so bumps just touch, matching main cloud proportions
+    canvas.fill_disc(ix + 21, iy + 58, 11, E6Color::Blue);   // left big bump outline
+    canvas.fill_disc(ix + 35, iy + 62,  8, E6Color::Blue);   // right small bump outline
+    canvas.fill_rect(ix + 11, iy + 60, 34, 16, E6Color::Blue);
+    canvas.fill_disc(ix + 21, iy + 58,  9, E6Color::White);
+    canvas.fill_disc(ix + 35, iy + 62,  7, E6Color::White);
+    canvas.fill_rect(ix + 12, iy + 62, 32, 13, E6Color::White);
 }
 
 fn draw_sun_full(canvas: &mut E6Canvas, ix: i32, iy: i32) {
-    canvas.fill_disc(ix + 32, iy + 30, 12, E6Color::Yellow);
-    canvas.fill_rect(ix + 31, iy + 12, 3, 6, E6Color::Yellow); // N
-    canvas.fill_rect(ix + 31, iy + 44, 3, 6, E6Color::Yellow); // S
-    canvas.fill_rect(ix + 46, iy + 29, 6, 3, E6Color::Yellow); // E
-    canvas.fill_rect(ix + 12, iy + 29, 6, 3, E6Color::Yellow); // W
-    canvas.fill_rect(ix + 43, iy + 15, 4, 4, E6Color::Yellow); // NE
-    canvas.fill_rect(ix + 43, iy + 41, 4, 4, E6Color::Yellow); // SE
-    canvas.fill_rect(ix + 17, iy + 41, 4, 4, E6Color::Yellow); // SW
-    canvas.fill_rect(ix + 17, iy + 15, 4, 4, E6Color::Yellow); // NW
+    canvas.fill_disc(ix + 42, iy + 39, 16, E6Color::Yellow);
+    canvas.fill_rect(ix + 41, iy + 16,  4,  8, E6Color::Yellow); // N
+    canvas.fill_rect(ix + 41, iy + 58,  4,  8, E6Color::Yellow); // S
+    canvas.fill_rect(ix + 60, iy + 38,  8,  4, E6Color::Yellow); // E
+    canvas.fill_rect(ix + 16, iy + 38,  8,  4, E6Color::Yellow); // W
+    canvas.fill_rect(ix + 56, iy + 20,  5,  5, E6Color::Yellow); // NE
+    canvas.fill_rect(ix + 56, iy + 54,  5,  5, E6Color::Yellow); // SE
+    canvas.fill_rect(ix + 22, iy + 54,  5,  5, E6Color::Yellow); // SW
+    canvas.fill_rect(ix + 22, iy + 20,  5,  5, E6Color::Yellow); // NW
 }
 
 fn draw_sun_small(canvas: &mut E6Canvas, ix: i32, iy: i32) {
-    canvas.fill_disc(ix + 45, iy + 18, 9, E6Color::Yellow);
-    canvas.fill_rect(ix + 44, iy +  5, 3, 5, E6Color::Yellow); // N
-    canvas.fill_rect(ix + 44, iy + 29, 3, 5, E6Color::Yellow); // S
-    canvas.fill_rect(ix + 56, iy + 17, 5, 3, E6Color::Yellow); // E
-    canvas.fill_rect(ix + 29, iy + 17, 5, 3, E6Color::Yellow); // W
-    canvas.fill_rect(ix + 53, iy +  9, 3, 3, E6Color::Yellow); // NE
-    canvas.fill_rect(ix + 53, iy + 26, 3, 3, E6Color::Yellow); // SE
-    canvas.fill_rect(ix + 35, iy + 26, 3, 3, E6Color::Yellow); // SW
-    canvas.fill_rect(ix + 35, iy +  9, 3, 3, E6Color::Yellow); // NW
+    canvas.fill_disc(ix + 59, iy + 24, 12, E6Color::Yellow);
+    canvas.fill_rect(ix + 58, iy +  7,  4,  7, E6Color::Yellow); // N
+    canvas.fill_rect(ix + 58, iy + 38,  4,  7, E6Color::Yellow); // S
+    canvas.fill_rect(ix + 73, iy + 22,  7,  4, E6Color::Yellow); // E
+    canvas.fill_rect(ix + 38, iy + 22,  7,  4, E6Color::Yellow); // W
+    canvas.fill_rect(ix + 70, iy + 12,  4,  4, E6Color::Yellow); // NE
+    canvas.fill_rect(ix + 70, iy + 34,  4,  4, E6Color::Yellow); // SE
+    canvas.fill_rect(ix + 46, iy + 34,  4,  4, E6Color::Yellow); // SW
+    canvas.fill_rect(ix + 46, iy + 12,  4,  4, E6Color::Yellow); // NW
 }
 
 fn draw_moon_full(canvas: &mut E6Canvas, ix: i32, iy: i32, cutout: E6Color) {
-    canvas.fill_disc(ix + 29, iy + 30, 15, E6Color::Yellow);
-    canvas.fill_disc(ix + 37, iy + 24, 12, cutout);  // carve crescent
+    canvas.fill_disc(ix + 38, iy + 39, 20, E6Color::Yellow);
+    canvas.fill_disc(ix + 49, iy + 32, 16, cutout);  // carve crescent
 
     // Four single-pixel stars scattered outside the moon
-    for &(sx, sy) in &[(7i32, 9i32), (54, 6), (58, 35), (12, 55)] {
+    for &(sx, sy) in &[(9i32, 12i32), (71, 8), (76, 46), (16, 72)] {
         canvas.fill_rect(ix + sx, iy + sy, 1, 1, E6Color::White);
     }
     // One bright cross star: yellow center, four white arms
-    canvas.fill_rect(ix + 48, iy + 54,     1, 1, E6Color::Yellow);
-    canvas.fill_rect(ix + 47, iy + 54,     1, 1, E6Color::White);
-    canvas.fill_rect(ix + 49, iy + 54,     1, 1, E6Color::White);
-    canvas.fill_rect(ix + 48, iy + 53,     1, 1, E6Color::White);
-    canvas.fill_rect(ix + 48, iy + 55,     1, 1, E6Color::White);
+    canvas.fill_rect(ix + 63, iy + 71,     1, 1, E6Color::Yellow);
+    canvas.fill_rect(ix + 62, iy + 71,     1, 1, E6Color::White);
+    canvas.fill_rect(ix + 64, iy + 71,     1, 1, E6Color::White);
+    canvas.fill_rect(ix + 63, iy + 70,     1, 1, E6Color::White);
+    canvas.fill_rect(ix + 63, iy + 72,     1, 1, E6Color::White);
 }
 
 fn draw_moon_small(canvas: &mut E6Canvas, ix: i32, iy: i32, cutout: E6Color) {
-    canvas.fill_disc(ix + 44, iy + 19, 10, E6Color::Yellow);
-    canvas.fill_disc(ix + 50, iy + 14,  8, cutout);  // carve crescent
+    canvas.fill_disc(ix + 58, iy + 25, 13, E6Color::Yellow);
+    canvas.fill_disc(ix + 66, iy + 18, 11, cutout);  // carve crescent
 }
 
 pub(crate) fn draw_condition_icon(canvas: &mut E6Canvas, ix: i32, iy: i32, cond: WeatherCondition) {
@@ -322,31 +322,31 @@ fn draw_weather_icon(canvas: &mut E6Canvas, ix: i32, iy: i32, cond: WeatherCondi
         WeatherCondition::Cloudy            => draw_cloud(canvas, ix, iy),
         WeatherCondition::Rain              => {
             draw_cloud(canvas, ix, iy);
-            canvas.fill_rect(ix + 20, iy + 42, 3, 9, E6Color::Blue);
-            canvas.fill_rect(ix + 30, iy + 42, 3, 9, E6Color::Blue);
-            canvas.fill_rect(ix + 40, iy + 42, 3, 9, E6Color::Blue);
+            canvas.fill_rect(ix + 26, iy + 55, 4, 12, E6Color::Blue);
+            canvas.fill_rect(ix + 39, iy + 55, 4, 12, E6Color::Blue);
+            canvas.fill_rect(ix + 53, iy + 55, 4, 12, E6Color::Blue);
         }
         WeatherCondition::Thunderstorm      => {
             draw_cloud(canvas, ix, iy);
             // Z-shaped lightning bolt
-            canvas.fill_rect(ix + 28, iy + 40, 10, 3, E6Color::Yellow);
-            canvas.fill_rect(ix + 28, iy + 43,  4, 9, E6Color::Yellow);
-            canvas.fill_rect(ix + 22, iy + 50, 10, 3, E6Color::Yellow);
-            canvas.fill_rect(ix + 22, iy + 53,  4, 8, E6Color::Yellow);
+            canvas.fill_rect(ix + 37, iy + 53, 13,  4, E6Color::Yellow);
+            canvas.fill_rect(ix + 37, iy + 56,  5, 12, E6Color::Yellow);
+            canvas.fill_rect(ix + 29, iy + 66, 13,  4, E6Color::Yellow);
+            canvas.fill_rect(ix + 29, iy + 70,  5, 11, E6Color::Yellow);
         }
         WeatherCondition::Snow              => {
             draw_cloud(canvas, ix, iy);
-            for &cx in &[18i32, 30, 42] {
-                canvas.fill_rect(ix + cx - 4, iy + 47, 9, 3, E6Color::White);
-                canvas.fill_rect(ix + cx - 1, iy + 43, 3, 9, E6Color::White);
+            for &cx in &[24i32, 39, 55] {
+                canvas.fill_rect(ix + cx - 5, iy + 62, 12,  4, E6Color::White);
+                canvas.fill_rect(ix + cx - 1, iy + 56,  4, 12, E6Color::White);
             }
         }
         WeatherCondition::Fog               => {
-            canvas.fill_rect(ix +  6, iy + 18, 52, 4, E6Color::Black);
-            canvas.fill_rect(ix + 10, iy + 26, 44, 4, E6Color::Black);
-            canvas.fill_rect(ix +  6, iy + 34, 52, 4, E6Color::Black);
-            canvas.fill_rect(ix + 10, iy + 42, 44, 4, E6Color::Black);
-            canvas.fill_rect(ix +  6, iy + 50, 52, 4, E6Color::Black);
+            canvas.fill_rect(ix +  8, iy + 24, 68, 5, E6Color::Black);
+            canvas.fill_rect(ix + 13, iy + 34, 58, 5, E6Color::Black);
+            canvas.fill_rect(ix +  8, iy + 45, 68, 5, E6Color::Black);
+            canvas.fill_rect(ix + 13, iy + 55, 58, 5, E6Color::Black);
+            canvas.fill_rect(ix +  8, iy + 66, 68, 5, E6Color::Black);
         }
         WeatherCondition::Unknown           => {}
     }
