@@ -29,19 +29,21 @@ struct CalEvent {
 }
 
 pub struct GCalModule {
-    today:    Mutex<Vec<CalEvent>>,
-    tomorrow: Mutex<Vec<CalEvent>>,
-    token:    Mutex<TokenCache>,
-    client:   reqwest::Client,
-    last_ok:  Mutex<Option<Instant>>,
+    today:      Mutex<Vec<CalEvent>>,
+    tomorrow:   Mutex<Vec<CalEvent>>,
+    day_after:  Mutex<Vec<CalEvent>>,
+    token:      Mutex<TokenCache>,
+    client:     reqwest::Client,
+    last_ok:    Mutex<Option<Instant>>,
 }
 
 impl GCalModule {
     pub fn new(client: reqwest::Client) -> Self {
         Self {
-            today:    Mutex::new(Vec::new()),
-            tomorrow: Mutex::new(Vec::new()),
-            token:    Mutex::new(TokenCache {
+            today:     Mutex::new(Vec::new()),
+            tomorrow:  Mutex::new(Vec::new()),
+            day_after: Mutex::new(Vec::new()),
+            token:     Mutex::new(TokenCache {
                 token:      String::new(),
                 expires_at: Instant::now(),  // already expired → forces first refresh
             }),
@@ -76,33 +78,39 @@ impl GCalModule {
 
     pub async fn refresh(&self) {
         match self.fetch().await {
-            Ok((today, tomorrow)) => {
-                *self.today.lock().unwrap()    = today;
-                *self.tomorrow.lock().unwrap() = tomorrow;
-                *self.last_ok.lock().unwrap()  = Some(Instant::now());
+            Ok((today, tomorrow, day_after)) => {
+                *self.today.lock().unwrap()     = today;
+                *self.tomorrow.lock().unwrap()  = tomorrow;
+                *self.day_after.lock().unwrap() = day_after;
+                *self.last_ok.lock().unwrap()   = Some(Instant::now());
             }
             Err(e) => tracing::warn!("gcal fetch failed: {e}"),
         }
     }
 
-    async fn fetch(&self) -> Result<(Vec<CalEvent>, Vec<CalEvent>), Box<dyn std::error::Error + Send + Sync>> {
-        let token     = self.access_token().await?;
-        let now       = Local::now();
-        let today     = now.date_naive();
-        let tomorrow  = today.succ_opt().unwrap_or(today);
-        let day_after = tomorrow.succ_opt().unwrap_or(tomorrow);
-        let tz        = now.format("%:z").to_string();
+    async fn fetch(&self) -> Result<(Vec<CalEvent>, Vec<CalEvent>, Vec<CalEvent>), Box<dyn std::error::Error + Send + Sync>> {
+        let token      = self.access_token().await?;
+        let now        = Local::now();
+        let today      = now.date_naive();
+        let tomorrow   = today.succ_opt().unwrap_or(today);
+        let day_after  = tomorrow.succ_opt().unwrap_or(tomorrow);
+        let two_after  = day_after.succ_opt().unwrap_or(day_after);
+        let tz         = now.format("%:z").to_string();
 
-        let today_events    = self.fetch_range(&token,
+        let today_events     = self.fetch_range(&token,
             &today.format("%Y-%m-%d").to_string(),
             &tomorrow.format("%Y-%m-%d").to_string(),
             &tz).await?;
-        let tomorrow_events = self.fetch_range(&token,
+        let tomorrow_events  = self.fetch_range(&token,
             &tomorrow.format("%Y-%m-%d").to_string(),
             &day_after.format("%Y-%m-%d").to_string(),
             &tz).await?;
+        let day_after_events = self.fetch_range(&token,
+            &day_after.format("%Y-%m-%d").to_string(),
+            &two_after.format("%Y-%m-%d").to_string(),
+            &tz).await?;
 
-        Ok((today_events, tomorrow_events))
+        Ok((today_events, tomorrow_events, day_after_events))
     }
 
     async fn fetch_range(
@@ -180,8 +188,9 @@ fn form_encode(s: &str)    -> String { encode_bytes(s, true)  }
 
 impl Module for GCalModule {
     fn render(&self, canvas: &mut E6Canvas, region: Rect) {
-        let today_events    = self.today.lock().unwrap().clone();
-        let tomorrow_events = self.tomorrow.lock().unwrap().clone();
+        let today_events     = self.today.lock().unwrap().clone();
+        let tomorrow_events  = self.tomorrow.lock().unwrap().clone();
+        let day_after_events = self.day_after.lock().unwrap().clone();
         let stale  = self.last_ok.lock().unwrap()
             .map(|t| t.elapsed() > STALE_AFTER)
             .unwrap_or(true);
@@ -208,7 +217,7 @@ impl Module for GCalModule {
             .filter(|e| !(after_6pm && e.sort_key >= 0 && e.sort_key < HIDE_BEFORE_MINUTES))
             .collect();
 
-        if today_visible.is_empty() && tomorrow_events.is_empty() {
+        if today_visible.is_empty() && tomorrow_events.is_empty() && day_after_events.is_empty() {
             if y + ascent <= max_y {
                 canvas.fill_rect(region.x, y, region.width, line_h, E6Color::Black);
                 draw_text(canvas, region.x + MARGIN, y, "No events today.", SIZE_PX, E6Color::White, false);
@@ -246,6 +255,16 @@ impl Module for GCalModule {
 
             let text = format!("{}  {}", event.start_display, event.summary);
             canvas.fill_rect(region.x, y, region.width, line_h, E6Color::Green);
+            draw_text(canvas, region.x + MARGIN, y, &text, SIZE_PX, E6Color::Black, false);
+            y += line_h;
+        }
+
+        // Day-after-tomorrow's events: black text on yellow background
+        for event in &day_after_events {
+            if y + ascent > max_y { break; }
+
+            let text = format!("{}  {}", event.start_display, event.summary);
+            canvas.fill_rect(region.x, y, region.width, line_h, E6Color::Yellow);
             draw_text(canvas, region.x + MARGIN, y, &text, SIZE_PX, E6Color::Black, false);
             y += line_h;
         }
