@@ -15,6 +15,7 @@ pub fn render(
     fw_ver:       &str,
     show_version: bool,
     stock:        &StockModule,
+    weekend:      bool,
 ) -> RenderedImage {
     let mut canvas = E6Canvas::new(E6Color::White);
 
@@ -31,7 +32,7 @@ pub fn render(
         let ver_text = format!("SV: {server_ver}   FW: {fw_ver}");
         let (ver_w, _) = measure_text(&ver_text, SIZE_PX, false);
         draw_text(&mut canvas, SCREEN_W - MARGIN - ver_w, line_y, &ver_text, SIZE_PX, E6Color::Black, false);
-    } else {
+    } else if !weekend {
         stock.render_strip(&mut canvas);
     }
 
@@ -55,4 +56,12 @@ pub fn gcal_region() -> Rect {
 /// so shifting region.y by bank_display_h places GCal immediately below the bank block.
 pub fn gcal_below_bank_region(bank_display_h: i32) -> Rect {
     Rect { x: 0, y: bank_display_h, width: SCREEN_W, height: SCREEN_H - STRIP_H - bank_display_h }
+}
+
+/// Weekend variants: full screen height — no stock strip, so calendar can use 2 extra lines.
+pub fn weekend_gcal_region() -> Rect {
+    Rect { x: 0, y: 0, width: SCREEN_W, height: SCREEN_H }
+}
+pub fn weekend_gcal_below_bank_region(bank_display_h: i32) -> Rect {
+    Rect { x: 0, y: bank_display_h, width: SCREEN_W, height: SCREEN_H - bank_display_h }
 }
