@@ -1,5 +1,6 @@
 use crate::image::E6Canvas;
 
+pub mod bank;
 pub mod battery;
 pub mod clock;
 pub mod gcal;

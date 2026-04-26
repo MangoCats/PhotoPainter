@@ -4,6 +4,7 @@ mod image;
 mod location;
 mod modules;
 mod nws_cache;
+mod plaid_creds;
 mod renderer;
 mod stock_creds;
 
@@ -23,6 +24,7 @@ use tracing_subscriber::{fmt, EnvFilter};
 use chrono::{DateTime, Local};
 
 use nws_cache::NwsPointsCache;
+use modules::bank::BankModule;
 use modules::battery::parse_battery_header;
 use modules::clock::ClockModule;
 use modules::gcal::GCalModule;
@@ -30,7 +32,7 @@ use modules::icon_matrix::IconMatrixModule;
 use modules::rain::{RainModule, NearTermRain};
 use modules::stock::StockModule;
 use modules::weather::{WeatherModule, WeatherData};
-use renderer::{render, full_screen, gcal_region, RenderedImage};
+use renderer::{render, full_screen, gcal_region, gcal_below_bank_region, RenderedImage};
 
 const SERVER_VERSION: &str = env!("GIT_VERSION");
 
@@ -79,9 +81,11 @@ struct AppState {
     weather:           WeatherModule,
     rain:              RainModule,
     gcal:              GCalModule,
+    bank:              BankModule,
     stock:             StockModule,
     displayed:         RwLock<Option<DisplayedState>>,
     icon_matrix_mode:  bool,
+    bank_mode:         bool,
 }
 type SharedState = Arc<AppState>;
 
@@ -113,22 +117,36 @@ async fn commit_displayed(
 // ── Render helper ─────────────────────────────────────────────────────────────
 
 async fn do_render(state: &AppState, show_version: bool) -> RenderedImage {
-    let fw_ver     = state.fw_version.read().await.clone();
-    let clock      = ClockModule;
-    let icon_mtrx  = IconMatrixModule;
-    let modules: &[(&dyn crate::modules::Module, _)] = if state.icon_matrix_mode {
-        &[
+    let fw_ver    = state.fw_version.read().await.clone();
+    let clock     = ClockModule;
+    let icon_mtrx = IconMatrixModule;
+
+    if state.icon_matrix_mode {
+        let modules: &[(&dyn crate::modules::Module, _)] = &[
             (&clock,      full_screen()),
             (&icon_mtrx,  gcal_region()),
-        ]
-    } else {
-        &[
+        ];
+        return render(modules, SERVER_VERSION, &fw_ver, show_version, &state.stock);
+    }
+
+    if state.bank_mode {
+        let bank_h = modules::bank::display_height();
+        let modules: &[(&dyn crate::modules::Module, _)] = &[
             (&clock,         full_screen()),
             (&state.rain,    full_screen()),
             (&state.weather, full_screen()),
-            (&state.gcal,    gcal_region()),
-        ]
-    };
+            (&state.bank,    gcal_region()),
+            (&state.gcal,    gcal_below_bank_region(bank_h)),
+        ];
+        return render(modules, SERVER_VERSION, &fw_ver, show_version, &state.stock);
+    }
+
+    let modules: &[(&dyn crate::modules::Module, _)] = &[
+        (&clock,         full_screen()),
+        (&state.rain,    full_screen()),
+        (&state.weather, full_screen()),
+        (&state.gcal,    gcal_region()),
+    ];
     render(modules, SERVER_VERSION, &fw_ver, show_version, &state.stock)
 }
 
@@ -152,7 +170,11 @@ fn load_tickers() -> Vec<String> {
 
 async fn render_loop(state: SharedState) {
     loop {
-        tokio::join!(state.weather.refresh(), state.rain.refresh(), state.gcal.refresh());
+        if state.bank_mode {
+            tokio::join!(state.weather.refresh(), state.rain.refresh(), state.gcal.refresh(), state.bank.refresh());
+        } else {
+            tokio::join!(state.weather.refresh(), state.rain.refresh(), state.gcal.refresh());
+        }
         let now       = Local::now();
         let weather   = state.weather.peek();
         let near_rain = state.rain.peek_near();
@@ -360,11 +382,17 @@ async fn main() {
     let weather = WeatherModule::new(client.clone(), Arc::clone(&nws_cache));
     let rain    = RainModule::new(client.clone(), Arc::clone(&nws_cache));
     let gcal    = GCalModule::new(client.clone());
+    let bank    = BankModule::new(client.clone());
     let stock   = StockModule::new(tickers, client);
 
     let icon_matrix_mode = std::env::var("ICON_MATRIX").is_ok();
     if icon_matrix_mode {
         tracing::info!("ICON_MATRIX mode: gcal replaced with icon grid");
+    }
+
+    let bank_mode = std::env::var("BANK_MODE").is_ok();
+    if bank_mode {
+        tracing::info!("BANK_MODE: bank balance shown above calendar");
     }
 
     let state: SharedState = Arc::new(AppState {
@@ -373,9 +401,11 @@ async fn main() {
         weather,
         rain,
         gcal,
+        bank,
         stock,
         displayed:  RwLock::new(None),
         icon_matrix_mode,
+        bank_mode,
     });
 
     // Initial render shows the version bar once; render_loop always shows the stock strip

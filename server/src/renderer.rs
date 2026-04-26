@@ -50,3 +50,9 @@ pub fn full_screen() -> Rect {
 pub fn gcal_region() -> Rect {
     Rect { x: 0, y: 0, width: SCREEN_W, height: SCREEN_H - STRIP_H }
 }
+
+/// GCal region when the bank block sits above it.  GCalModule draws at region.y + GCAL_Y_START,
+/// so shifting region.y by bank_display_h places GCal immediately below the bank block.
+pub fn gcal_below_bank_region(bank_display_h: i32) -> Rect {
+    Rect { x: 0, y: bank_display_h, width: SCREEN_W, height: SCREEN_H - STRIP_H - bank_display_h }
+}
