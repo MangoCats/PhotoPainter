@@ -7,7 +7,7 @@ use super::{Module, Rect};
 use super::rain;
 
 const SIZE_PX:     f32 = 28.0;
-const TXN_SIZE_PX: f32 = SIZE_PX * 0.8;  // 22.4px
+const TXN_SIZE_PX: f32 = 17.0;
 const MARGIN:      i32 = 8;
 const LINE_GAP:    i32 = 4;
 const TXN_GAP:     i32 = 3;
