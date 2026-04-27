@@ -4,7 +4,7 @@ mod image;
 mod location;
 mod modules;
 mod nws_cache;
-mod plaid_creds;
+mod teller_creds;
 mod renderer;
 mod stock_creds;
 
@@ -400,7 +400,7 @@ async fn main() {
     let weather = WeatherModule::new(client.clone(), Arc::clone(&nws_cache));
     let rain    = RainModule::new(client.clone(), Arc::clone(&nws_cache));
     let gcal    = GCalModule::new(client.clone());
-    let bank    = BankModule::new(client.clone());
+    let bank    = BankModule::new();
     let stock   = StockModule::new(tickers, client);
 
     let icon_matrix_mode = std::env::var("ICON_MATRIX").is_ok();

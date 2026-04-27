@@ -1,9 +1,8 @@
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use chrono::Local;
 use crate::font::{draw_text, measure_text};
 use crate::image::{E6Canvas, E6Color};
-use crate::plaid_creds::{CLIENT_ID, SECRET, ACCESS_TOKEN, ACCOUNT_ID};
+use crate::teller_creds::{ACCESS_TOKEN, ACCOUNT_ID, CERT_PATH, KEY_PATH};
 use super::{Module, Rect};
 use super::rain;
 
@@ -24,7 +23,7 @@ pub fn display_height() -> i32 {
 
 #[derive(Clone)]
 struct Transaction {
-    amount:  f64,    // Plaid convention: positive = debit (out), negative = credit (in)
+    amount:  f64,    // Teller: negative = debit (out), positive = credit (in)
     name:    String,
     date:    String, // "MM/DD"
     pending: bool,
@@ -43,12 +42,33 @@ pub struct BankModule {
 }
 
 impl BankModule {
-    pub fn new(client: reqwest::Client) -> Self {
+    pub fn new() -> Self {
         Self {
             data:    Mutex::new(None),
-            client,
+            client:  Self::build_client(),
             last_ok: Mutex::new(None),
         }
+    }
+
+    fn build_client() -> reqwest::Client {
+        let mut builder = reqwest::Client::builder()
+            .user_agent("PhotoPainter/1.0 (github.com/photopainter)")
+            .timeout(Duration::from_secs(15));
+
+        match (std::fs::read(CERT_PATH), std::fs::read(KEY_PATH)) {
+            (Ok(cert), Ok(key)) => {
+                let mut pem = cert;
+                pem.extend_from_slice(&key);
+                match reqwest::Identity::from_pem(&pem) {
+                    Ok(id) => { builder = builder.identity(id); }
+                    Err(e) => tracing::warn!("teller: could not parse mTLS identity: {e}"),
+                }
+            }
+            (Err(e), _) => tracing::warn!("teller: could not read {CERT_PATH}: {e}"),
+            (_, Err(e)) => tracing::warn!("teller: could not read {KEY_PATH}: {e}"),
+        }
+
+        builder.build().expect("failed to build teller HTTP client")
     }
 
     pub async fn refresh(&self) {
@@ -62,56 +82,36 @@ impl BankModule {
     }
 
     async fn fetch(&self) -> Result<BankData, Box<dyn std::error::Error + Send + Sync>> {
-        let bal_resp: serde_json::Value = self.client
-            .post("https://production.plaid.com/accounts/balance/get")
-            .json(&serde_json::json!({
-                "client_id":    CLIENT_ID,
-                "secret":       SECRET,
-                "access_token": ACCESS_TOKEN,
-                "options": { "account_ids": [ACCOUNT_ID] }
-            }))
+        let base = format!("https://api.teller.io/accounts/{ACCOUNT_ID}");
+
+        // Balance — amounts returned as strings
+        let bal: serde_json::Value = self.client
+            .get(format!("{base}/balances"))
+            .basic_auth(ACCESS_TOKEN, Some(""))
             .send().await?.json().await?;
 
-        let account = bal_resp["accounts"]
-            .as_array()
-            .and_then(|a| a.first())
-            .ok_or("no accounts in balance response")?;
-
-        // Prefer available balance for checking; fall back to current
-        let balance = account["balances"]["available"].as_f64()
-            .or_else(|| account["balances"]["current"].as_f64())
+        let balance = bal["available"].as_str()
+            .or_else(|| bal["ledger"].as_str())
+            .and_then(|s| s.parse::<f64>().ok())
             .ok_or("missing balance")?;
 
-        let now        = Local::now();
-        let end_date   = now.format("%Y-%m-%d").to_string();
-        let start_date = (now - chrono::Duration::days(30)).format("%Y-%m-%d").to_string();
-
-        let txn_resp: serde_json::Value = self.client
-            .post("https://production.plaid.com/transactions/get")
-            .json(&serde_json::json!({
-                "client_id":    CLIENT_ID,
-                "secret":       SECRET,
-                "access_token": ACCESS_TOKEN,
-                "start_date":   start_date,
-                "end_date":     end_date,
-                "options": {
-                    "account_ids": [ACCOUNT_ID],
-                    "count":  MAX_TXN,
-                    "offset": 0
-                }
-            }))
+        // Transactions — array returned directly, newest first
+        let txns: serde_json::Value = self.client
+            .get(format!("{base}/transactions"))
+            .basic_auth(ACCESS_TOKEN, Some(""))
             .send().await?.json().await?;
 
-        let transactions = txn_resp["transactions"]
-            .as_array()
+        let transactions = txns.as_array()
             .map(|arr| {
                 arr.iter().take(MAX_TXN).filter_map(|t| {
-                    let amount  = t["amount"].as_f64()?;
-                    let name    = t["merchant_name"].as_str()
-                        .or_else(|| t["name"].as_str())
+                    // Teller returns amounts as decimal strings; negative = debit (money out)
+                    let amount  = t["amount"].as_str()
+                        .and_then(|s| s.parse::<f64>().ok())?;
+                    let name    = t["details"]["counterparty"]["name"].as_str()
+                        .or_else(|| t["description"].as_str())
                         .unwrap_or("Unknown")
                         .to_string();
-                    let pending = t["pending"].as_bool().unwrap_or(false);
+                    let pending = t["status"].as_str() == Some("pending");
                     let raw     = t["date"].as_str().unwrap_or("");
                     let date    = if raw.len() == 10 {
                         format!("{}/{}", &raw[5..7], &raw[8..10])
@@ -154,8 +154,9 @@ impl Module for BankModule {
         y += line_h;
 
         // Transaction lines: white on green
+        // Teller sign: negative = debit (money out), positive = credit (money in)
         for txn in &data.transactions {
-            let sign = if txn.amount > 0.0 { "-" } else { "+" };
+            let sign = if txn.amount < 0.0 { "-" } else { "+" };
             let amt  = fmt_dollars(txn.amount.abs());
             let pend = if txn.pending { " P" } else { "" };
             let text = format!("{}  {}{}{}  {}", txn.date, sign, amt, pend, txn.name);
