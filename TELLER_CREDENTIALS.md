@@ -78,8 +78,24 @@ pub const ACCESS_TOKEN: &str = "token_...";
 
 ## Step 3 — Find your checking account ID
 
+> **Windows note:** Windows curl uses schannel and cannot load PEM files directly.
+> Use the Python snippet below instead of curl on Windows.
+
+```python
+import requests, json
+resp = requests.get(
+    'https://api.teller.io/accounts',
+    cert=('certificate.pem', 'private_key.pem'),
+    auth=('YOUR_ACCESS_TOKEN', ''))
+print(json.dumps(resp.json(), indent=2))
+```
+
+Run with `python3 accounts.py` (install `requests` first if needed: `pip install requests`).
+
+On Linux/Mac you can use curl instead:
+
 ```bash
-curl -s --cert teller_cert.pem --key teller_key.pem \
+curl -s --cert certificate.pem --key private_key.pem \
   -u "YOUR_ACCESS_TOKEN:" \
   https://api.teller.io/accounts | python3 -m json.tool
 ```
@@ -91,25 +107,24 @@ Look through the JSON for the entry with `"type": "depository"` and
 pub const ACCOUNT_ID: &str = "acc_...";
 ```
 
-> **Note:** the `-u "token:"` syntax sends the token as the Basic auth username
-> with an empty password, which is what Teller requires.
-
 ---
 
 ## Step 4 — Verify the connection (optional)
 
-Check that balance and transactions are reachable before starting the server:
+Check that balance and transactions are reachable before starting the server.
+Replace `TOKEN`, `CERT`, `KEY`, and `ACCOUNT_ID` with your values.
 
-```bash
-# Balance
-curl -s --cert teller_cert.pem --key teller_key.pem \
-  -u "YOUR_ACCESS_TOKEN:" \
-  https://api.teller.io/accounts/YOUR_ACCOUNT_ID/balances | python3 -m json.tool
+```python
+import requests, json
 
-# Most recent transactions
-curl -s --cert teller_cert.pem --key teller_key.pem \
-  -u "YOUR_ACCESS_TOKEN:" \
-  https://api.teller.io/accounts/YOUR_ACCOUNT_ID/transactions | python3 -m json.tool
+TOKEN = "YOUR_ACCESS_TOKEN"
+ACCT  = "YOUR_ACCOUNT_ID"
+CERT  = ('certificate.pem', 'private_key.pem')
+
+bal  = requests.get(f'https://api.teller.io/accounts/{ACCT}/balances',   cert=CERT, auth=(TOKEN,''))
+txns = requests.get(f'https://api.teller.io/accounts/{ACCT}/transactions',cert=CERT, auth=(TOKEN,''))
+print("Balance:", json.dumps(bal.json(),  indent=2))
+print("Txns:",    json.dumps(txns.json(), indent=2))
 ```
 
 Both should return JSON with numeric fields as quoted strings (e.g. `"available": "1234.56"`).
