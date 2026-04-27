@@ -36,12 +36,14 @@ PhotoPainter/
         ├── location.rs         ← LAT/LON constants (gitignored, not in repo)
         ├── gcal_creds.rs       ← Google Calendar OAuth credentials (gitignored)
         ├── stock_creds.rs      ← Finnhub API key (gitignored)
+        ├── teller_creds.rs     ← Teller.io access token + account ID (gitignored)
         └── modules/
             ├── mod.rs          ← Module trait definition
             ├── clock.rs        ← date and time display
-            ├── weather.rs      ← NWS current temperature + H/L forecast
+            ├── weather.rs      ← NWS current temperature + H/L forecast + 84px weather icons
             ├── rain.rs         ← NWS QPF rain forecast
-            ├── gcal.rs         ← Google Calendar today's events
+            ├── gcal.rs         ← Google Calendar: today + tomorrow + day-after-tomorrow
+            ├── bank.rs         ← Teller.io balance + recent transactions
             └── stock.rs        ← Finnhub stock quotes
 ```
 
@@ -90,7 +92,9 @@ Cache-Control: no-store
 ```
 
 **`X-Poll-Interval`** — seconds until the device should poll again.
-- Currently fixed at 60 s by the server.
+- **11:00 PM – 5:45 AM:** 3600 s (overnight; device wakes once per hour).
+- **5:45 AM – 6:45 AM:** exact seconds remaining until 6:45 AM (one final long sleep that lands precisely at wake-up time).
+- **6:45 AM – 11:00 PM:** 60 s (daytime; normal 1-minute cadence).
 - Device clamps received value to [60, 3600]; stores in RTC memory.
 
 **`X-Server-Time`** — Unix timestamp (UTC seconds) at response generation time.
@@ -300,9 +304,16 @@ The server does **not** re-render on every poll. Instead, a background task (`re
 
 ```
 render_loop (every 60 s):
-  tokio::join!(weather.refresh(), rain.refresh(), gcal.refresh())
-  if significant_change:
-    stock.refresh()          ← only when render is already happening
+  if bank_mode:
+    tokio::join!(weather, rain, gcal, bank).refresh()  ← bank throttled to 1/20min
+    bank_changed = bank returned new data
+  else:
+    tokio::join!(weather, rain, gcal).refresh()
+    bank_changed = false
+
+  if bank_changed OR significant_change:
+    if not weekend AND not bank_mode:
+      stock.refresh()        ← only when render is already happening
     image = render(modules)
     store image + ETag
 ```
@@ -312,31 +323,30 @@ Significant changes that trigger a re-render:
 - Current temperature changes ≥ 2°F
 - Forecast high or low changes ≥ 3°F
 - Near-term rain status (≤ 6-hour window) changes between None / Active / Imminent
+- Bank balance or transactions changed (bank mode only)
 
-Stock data is **only fetched when a render is already being triggered** by one of the above conditions. Stock changes do not trigger renders on their own.
+Stock data is **only fetched when a render is already being triggered** by one of the above conditions. Stock changes do not trigger renders on their own. Stock is not fetched or displayed during bank mode or on weekends.
 
 ### Module Trait
 
 ```rust
 pub trait Module: Send + Sync {
     fn render(&self, canvas: &mut E6Canvas, region: Rect);
-    fn data_refresh_interval(&self) -> Duration;
-    fn suggested_poll_interval(&self) -> Option<Duration>;
 }
 ```
 
-All modules are passed `full_screen()` as their region (`Rect { x:0, y:0, width:800, height:480 }`) and self-manage their pixel coordinates internally.
+Modules receive a `Rect` region from the renderer. Most modules receive `full_screen()` and self-manage their coordinates internally. The GCal module uses `region.y` as a vertical offset to position itself below the bank block when bank mode is active, and `region.height` to determine how many lines fit.
 
 ### Image Pipeline
 
 ```
-tokio::join!(weather, rain, gcal) refresh in parallel
+Data modules refresh in parallel (bank throttled to 1/20 min)
         │
         ▼
 Each module renders into E6Canvas [u8; 384000] (one byte per pixel)
         │
         ▼
-Bottom 48px: stock strip (colored) or version bar (first render only)
+Bottom 48px: stock strip (normal mode only) or version bar (first render)
         │
         ▼
 Pack to 4bpp → [u8; 192000]
@@ -369,6 +379,8 @@ Values 0x4 and 0x7 render as dark brown/purple on this panel and are excluded.
 
 All coordinates are pixels from top-left (0,0). Screen is 800 × 480 px landscape.
 
+### Normal mode (weekdays 8:00 AM – 3:00 PM)
+
 ```
 y=0   ┌──────────────────────────────────────────────────────────────────────┐
       │ [Clock] Tuesday, April 21st, 2026 8:15:30 PM        [Weather]        │
@@ -376,14 +388,14 @@ y=4   │  24px black, left-margin=4                          Current: 96px    �
       │                                                      bold green, R-  │
       │ [Rain] 0.04 in/hr rain to start in 3.5 hours.       justified        │
 y≈26  │  28px blue, left-justified, max 500px wide           H/L: 43px green │
-      │                                                      R-justified      │
-y≈76  │  (weather block ends here on right; rain may extend further left)     │
-      │                                                                       │
+      │                                            [84px weather icon, R-just]│
 y=128 ├── Google Calendar ────────────────────────────────────────────────────┤
       │  8:30 AM  Dentist appointment        ← past/all-day: white on black   │
       │  All day  School holiday             ← next upcoming: yellow on blue  │
       │  2:00 PM  Team standup               ← further upcoming: white on blue│
-      │  ...up to ~12 lines...                                                │
+      │  [tomorrow's events]                 ← black on green                 │
+      │  [day-after events]                  ← black on yellow                │
+      │  ...up to ~13 lines...                                                │
 y=430 ├───────────────────────────────────────────────────────────────────────┤
       │  2px gap                                                              │
 y=432 ├── Stock Strip (48px) ─────────────────────────────────────────────────┤
@@ -392,7 +404,35 @@ y=432 ├── Stock Strip (48px) ───────────────
 y=480 └───────────────────────────────────────────────────────────────────────┘
 ```
 
-**Bottom strip switching:** On the very first render after server startup, the bottom 48px shows the version bar (`SV: <git-version>   FW: <fw-version>`, right-justified, 19.2px) instead of the stock strip. All subsequent renders show the stock strip.
+### Bank mode (weekends all day; weekdays 3:00 PM – 8:00 AM; or BANK_MODE=1)
+
+```
+y=0   ┌──────────────────────────────────────────────────────────────────────┐
+      │ [Clock]                                             [Weather]         │
+      │ [Rain]                                              [84px icon]       │
+      │                                                                       │
+y=96  │ ████████████████ Balance: $1,234.56 ████  ← black on yellow, 40% wide│
+y=128 ├── Bank Transactions (5 lines, 16px font) ──────────────────────────── │
+      │  04/27  -$42.10  P  Amazon                 ← white on green          │
+      │  04/26  -$8.50      Starbucks               ← white on green          │
+      │  ...up to 5 transactions...                                           │
+      ├── Google Calendar ────────────────────────────────────────────────────┤
+      │  [today's events]  [tomorrow's events]  [day-after events]            │
+      │  ...up to ~13 lines (no stock strip at bottom)...                     │
+y=480 └───────────────────────────────────────────────────────────────────────┘
+```
+
+**Balance line:** 28px font, black on yellow, left 40% of screen width, positioned one line-height above the transaction block (overlapping the lower rain/weather area where there is horizontal clearance).
+
+**Transaction lines:** 16px font, white on green. Amounts: `-` prefix = debit (money out), `+` prefix = credit (money in). Pending transactions show a ` P` suffix.
+
+**Bank query throttle:** Teller.io is queried at most once every 20 minutes. A repaint is triggered immediately when balance or transactions change.
+
+### After 6:00 PM (all modes)
+
+Today's calendar events starting before 12:01 PM are hidden to reduce clutter, showing only afternoon and evening events plus tomorrow's and the day-after's events.
+
+**Bottom strip switching:** On the very first render after server startup, the bottom area shows the version bar (`SV: <git-version>   FW: <fw-version>`, right-justified, 19.2px) instead of the stock strip. All subsequent renders show the stock strip (normal mode only).
 
 **Weather / clock coexistence:** The weather module erases the area behind its temperature block (white fill_rect from `cur_x` to right edge) before drawing, eliminating any clock text that extends into the temperature region.
 
@@ -438,15 +478,32 @@ y=480 └───────────────────────�
 - **Data source:** Google Calendar API v3, OAuth 2.0 refresh token flow
 - **Credentials:** `gcal_creds.rs` (gitignored) — CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN, CALENDAR_IDS
 - **Calendars:** multiple calendar IDs merged; exact-duplicate events (same summary + time) deduplicated
-- **Scope:** today only (midnight to midnight local time)
+- **Scope:** today, tomorrow, and day-after-tomorrow (three separate API fetches per refresh)
 - **Refresh:** every 5 minutes; access token cached with 60-second expiry margin
 - **Font:** 28px JetBrains Mono Regular
-- **Position:** y=128 to y=430 (~12 lines capacity; 9 guaranteed)
-- **Color coding by event status:**
-  - All-day events and past timed events: white text, black background
-  - Next upcoming timed event: yellow text, blue background
-  - Further upcoming timed events: white text, blue background
+- **Position:** y=128 downward; bottom boundary extends one line-height past region.height to use all available space
+- **Color coding:**
+  - Today — all-day events and past timed events: white text, black background
+  - Today — next upcoming timed event: yellow text, blue background
+  - Today — further upcoming timed events: white text, blue background
+  - Tomorrow's events: black text, green background
+  - Day-after-tomorrow's events: black text, yellow background
+- **After 6:00 PM filter:** today's events starting before 12:01 PM are hidden
 - **Sort order:** all-day events first (sort_key = -1), then chronological by start time
+
+### Bank (`bank.rs`)
+
+- **Data source:** Teller.io API (`api.teller.io`)
+- **Authentication:** mTLS (certificate + private key PEM files) + HTTP Basic auth (access token as username, empty password)
+- **Credentials:** `teller_creds.rs` (gitignored) — ACCESS_TOKEN, ACCOUNT_ID, CERT_PATH, KEY_PATH
+- **Certificate files:** `teller_cert.pem` and `teller_key.pem` in the server working directory (not in repo)
+- **Queries:** `GET /accounts/{id}/balances` and `GET /accounts/{id}/transactions`
+- **Throttle:** at most one Teller API call pair every 20 minutes; repaint triggered immediately on data change
+- **Stale threshold:** "(bank offline)" shown in red if last successful fetch was > 1 hour ago
+- **Font:** 28px balance line, 16px transaction lines
+- **Balance line:** black on yellow, left 40% of screen width
+- **Transaction lines:** white on green; sign convention: `-` = debit (money out), `+` = credit; ` P` suffix = pending
+- **Active schedule:** all day Saturday and Sunday; weekdays 3:00 PM – 8:00 AM; always on if `BANK_MODE=1`
 
 ### Stock Quotes (`stock.rs`)
 
@@ -460,7 +517,7 @@ y=480 └───────────────────────�
 - **Layout:** equal-width sections separated by 5px white vertical dividers
 - **Font:** auto-sized from max 43px down to fit the widest label; centered in each section
 - **Color:** green background = price ≥ open; red background = price < open; white text
-- **Refresh policy:** fetched only when a screen render is already being triggered
+- **Refresh policy:** fetched only when a screen render is already being triggered; not fetched or displayed during bank mode or on weekends
 
 ---
 
@@ -471,8 +528,11 @@ y=480 └───────────────────────�
 | `server/src/location.rs` | `LAT` and `LON` constants for NWS API lookups |
 | `server/src/gcal_creds.rs` | Google Calendar CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN, CALENDAR_IDS |
 | `server/src/stock_creds.rs` | Finnhub API_KEY |
+| `server/src/teller_creds.rs` | Teller.io ACCESS_TOKEN, ACCOUNT_ID, CERT_PATH, KEY_PATH |
+| `server/teller_cert.pem` | Teller.io mTLS client certificate |
+| `server/teller_key.pem` | Teller.io mTLS private key |
 
-These files must be created manually on each deployment. They are compiled directly into the server binary as Rust constants.
+The `.rs` credential files must be created manually on each deployment — they are compiled directly into the server binary as Rust constants. The PEM files must be present in the server working directory at runtime. See `GOOGLE_CREDENTIALS.md` and `TELLER_CREDENTIALS.md` for setup instructions.
 
 ---
 
@@ -491,6 +551,11 @@ These files must be created manually on each deployment. They are compiled direc
 | 9 | Font library | `fontdue` (pure Rust, no system deps); `ab_glyph` was considered and rejected |
 | 10 | Layout config | Hardcoded per-module constants; no runtime config file for layout |
 | 11 | Battery reporting | Single `X-Battery` request header; always sends `pct` + `mv` + `status`; adds `hrs` estimate only when discharging; estimate uses compile-time capacity and average-current constants |
+| 12 | Bank data source | Teller.io free tier (mTLS + Basic auth); chosen over Plaid (no free tier) |
+| 13 | Bank mode schedule | Auto-active weekends + weekdays 3 PM–8 AM; `BANK_MODE=1` forces 24/7 |
+| 14 | Poll interval | Three-zone: 3600 s overnight, countdown to 6:45 AM, 60 s daytime |
+| 15 | Calendar scope | Today + tomorrow + day-after; after 6 PM hides today's morning events |
+| 16 | Bank query rate | Throttled to once per 20 minutes; repaint on change, not on schedule |
 
 ---
 
