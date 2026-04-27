@@ -26,13 +26,26 @@ PhotoPainter/
 │
 ├── server/                    # Rust dashboard server (runs on Raspberry Pi)
 │   ├── Cargo.toml
+│   ├── stock_tickers.txt      # One ticker symbol per line; read at startup
+│   ├── teller_cert.pem        # Teller.io mTLS certificate (not in repo)
+│   ├── teller_key.pem         # Teller.io mTLS private key (not in repo)
 │   └── src/
-│       ├── main.rs            # axum HTTP server on :7654, background render task
+│       ├── main.rs            # axum HTTP server on :7654, background render task, poll intervals
 │       ├── renderer.rs        # Compose modules onto canvas, pack to 4bpp, SHA-256 ETag
 │       ├── image.rs           # E6Canvas (800×480, 6-color palette), fill_rect, pack
+│       ├── font.rs            # fontdue TTF rasterizer (JetBrains Mono)
+│       ├── location.rs        # LAT/LON constants (git-ignored)
+│       ├── gcal_creds.rs      # Google Calendar OAuth credentials (git-ignored)
+│       ├── stock_creds.rs     # Finnhub API key (git-ignored)
+│       ├── teller_creds.rs    # Teller.io access token + account ID (git-ignored)
 │       └── modules/
-│           ├── mod.rs         # Module trait (render, data_refresh_interval, suggested_poll_interval)
-│           └── clock.rs       # 7-segment HH:MM clock, 20% screen height, centered
+│           ├── mod.rs         # Module trait
+│           ├── clock.rs       # Date/time line, top of screen
+│           ├── weather.rs     # NWS temperature + H/L + 84px weather icons
+│           ├── rain.rs        # NWS QPF rain forecast text
+│           ├── gcal.rs        # Google Calendar: today + tomorrow + day-after
+│           ├── bank.rs        # Teller.io balance + recent transactions
+│           └── stock.rs       # Finnhub stock quote strip
 │
 ├── scratch/                   # Hardware bring-up and test sketches (not production)
 │   └── src/
@@ -40,6 +53,8 @@ PhotoPainter/
 │
 ├── DESIGN.md                  # Architecture decisions and resolved design questions
 ├── LESSONS_LEARNED.md         # Hardware reference: pin map, AXP2101 init, EPD sequence, color table
+├── GOOGLE_CREDENTIALS.md      # Step-by-step: obtaining permanent Google Calendar OAuth credentials
+├── TELLER_CREDENTIALS.md      # Step-by-step: Teller.io account, certificates, and enrollment
 └── ESP32-S3-PhotoPainter-Fac.bin  # Waveshare factory firmware (for recovery)
 ```
 
@@ -96,6 +111,15 @@ cargo build --release
 ```
 
 Listens on `0.0.0.0:7654`. Set `RUST_LOG=info` for request logging.
+
+#### Optional environment variables
+
+| Variable | Effect |
+|---|---|
+| `BANK_MODE=1` | Force bank balance display on 24/7 (otherwise activates automatically on schedule) |
+| `ICON_MATRIX=1` | Replace calendar with a full-screen icon grid (development/demo mode) |
+
+Bank mode activates automatically without `BANK_MODE=1` on weekends (all day) and on weekdays from 3:00 PM to 8:00 AM.
 
 To run it automatically on boot, create a systemd unit:
 
