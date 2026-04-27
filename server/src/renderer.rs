@@ -16,6 +16,7 @@ pub fn render(
     show_version: bool,
     stock:        &StockModule,
     weekend:      bool,
+    bank_mode:    bool,
 ) -> RenderedImage {
     let mut canvas = E6Canvas::new(E6Color::White);
 
@@ -32,7 +33,7 @@ pub fn render(
         let ver_text = format!("SV: {server_ver}   FW: {fw_ver}");
         let (ver_w, _) = measure_text(&ver_text, SIZE_PX, false);
         draw_text(&mut canvas, SCREEN_W - MARGIN - ver_w, line_y, &ver_text, SIZE_PX, E6Color::Black, false);
-    } else if !weekend {
+    } else if !weekend && !bank_mode {
         stock.render_strip(&mut canvas);
     }
 
