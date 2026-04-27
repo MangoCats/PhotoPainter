@@ -18,9 +18,10 @@ const STALE_AFTER: Duration = Duration::from_secs(3600);
 // Total lines rendered: 1 balance + up to MAX_TXN transactions.
 // Called by renderer to compute where gcal sits below the bank block.
 pub fn display_height() -> i32 {
-    let bal_h = measure_text("A", SIZE_PX, false).1 + LINE_GAP;
+    // Balance line overlaps into the rain area above, so only transaction lines
+    // consume calendar space.
     let txn_h = measure_text("A", TXN_SIZE_PX, false).1 + TXN_GAP;
-    bal_h + txn_h * MAX_TXN as i32
+    txn_h * MAX_TXN as i32
 }
 
 #[derive(Clone)]
@@ -138,10 +139,11 @@ impl Module for BankModule {
 
         let bal_h  = measure_text("A", SIZE_PX, false).1 + LINE_GAP;
         let txn_h  = measure_text("A", TXN_SIZE_PX, false).1 + TXN_GAP;
-        let mut y  = region.y + Y_START;
+        // Balance line sits one bal_h above the calendar boundary, overlapping the rain area.
+        let mut y  = region.y + Y_START - bal_h;
 
         if stale {
-            canvas.fill_rect(region.x, y, region.width, bal_h, E6Color::Red);
+            canvas.fill_rect(region.x, y, region.width / 3, bal_h, E6Color::Red);
             draw_text(canvas, region.x + MARGIN, y, "(bank offline)", SIZE_PX, E6Color::White, false);
             y += bal_h;
             if data.is_none() { return; }
@@ -149,9 +151,9 @@ impl Module for BankModule {
 
         let Some(data) = data else { return };
 
-        // Balance line: black on yellow
+        // Balance line: black on yellow, left third of screen only
         let bal_text = format!("Balance: {}", fmt_dollars(data.balance));
-        canvas.fill_rect(region.x, y, region.width, bal_h, E6Color::Yellow);
+        canvas.fill_rect(region.x, y, region.width / 3, bal_h, E6Color::Yellow);
         draw_text(canvas, region.x + MARGIN, y, &bal_text, SIZE_PX, E6Color::Black, false);
         y += bal_h;
 
