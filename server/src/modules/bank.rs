@@ -7,8 +7,10 @@ use super::{Module, Rect};
 use super::rain;
 
 const SIZE_PX:     f32 = 28.0;
+const TXN_SIZE_PX: f32 = SIZE_PX * 0.8;  // 22.4px
 const MARGIN:      i32 = 8;
 const LINE_GAP:    i32 = 4;
+const TXN_GAP:     i32 = 3;
 const Y_START:     i32 = rain::GCAL_Y_START;
 const MAX_TXN:     usize = 5;
 const STALE_AFTER: Duration = Duration::from_secs(3600);
@@ -16,9 +18,9 @@ const STALE_AFTER: Duration = Duration::from_secs(3600);
 // Total lines rendered: 1 balance + up to MAX_TXN transactions.
 // Called by renderer to compute where gcal sits below the bank block.
 pub fn display_height() -> i32 {
-    let ascent = measure_text("A", SIZE_PX, false).1;
-    let line_h = ascent + LINE_GAP;
-    line_h * (1 + MAX_TXN as i32)
+    let bal_h = measure_text("A", SIZE_PX, false).1 + LINE_GAP;
+    let txn_h = measure_text("A", TXN_SIZE_PX, false).1 + TXN_GAP;
+    bal_h + txn_h * MAX_TXN as i32
 }
 
 #[derive(Clone)]
@@ -134,14 +136,14 @@ impl Module for BankModule {
             .map(|t| t.elapsed() > STALE_AFTER)
             .unwrap_or(true);
 
-        let ascent = measure_text("A", SIZE_PX, false).1;
-        let line_h = ascent + LINE_GAP;
+        let bal_h  = measure_text("A", SIZE_PX, false).1 + LINE_GAP;
+        let txn_h  = measure_text("A", TXN_SIZE_PX, false).1 + TXN_GAP;
         let mut y  = region.y + Y_START;
 
         if stale {
-            canvas.fill_rect(region.x, y, region.width, line_h, E6Color::Red);
+            canvas.fill_rect(region.x, y, region.width, bal_h, E6Color::Red);
             draw_text(canvas, region.x + MARGIN, y, "(bank offline)", SIZE_PX, E6Color::White, false);
-            y += line_h;
+            y += bal_h;
             if data.is_none() { return; }
         }
 
@@ -149,20 +151,20 @@ impl Module for BankModule {
 
         // Balance line: black on yellow
         let bal_text = format!("Balance: {}", fmt_dollars(data.balance));
-        canvas.fill_rect(region.x, y, region.width, line_h, E6Color::Yellow);
+        canvas.fill_rect(region.x, y, region.width, bal_h, E6Color::Yellow);
         draw_text(canvas, region.x + MARGIN, y, &bal_text, SIZE_PX, E6Color::Black, false);
-        y += line_h;
+        y += bal_h;
 
-        // Transaction lines: white on green
+        // Transaction lines: white on green, smaller font
         // Teller sign: negative = debit (money out), positive = credit (money in)
         for txn in &data.transactions {
             let sign = if txn.amount < 0.0 { "-" } else { "+" };
             let amt  = fmt_dollars(txn.amount.abs());
             let pend = if txn.pending { " P" } else { "" };
             let text = format!("{}  {}{}{}  {}", txn.date, sign, amt, pend, txn.name);
-            canvas.fill_rect(region.x, y, region.width, line_h, E6Color::Green);
-            draw_text(canvas, region.x + MARGIN, y, &text, SIZE_PX, E6Color::White, false);
-            y += line_h;
+            canvas.fill_rect(region.x, y, region.width, txn_h, E6Color::Green);
+            draw_text(canvas, region.x + MARGIN, y, &text, TXN_SIZE_PX, E6Color::White, false);
+            y += txn_h;
         }
     }
 }
