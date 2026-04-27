@@ -196,8 +196,8 @@ impl Module for GCalModule {
             .unwrap_or(true);
         let ascent = measure_text("A", SIZE_PX, false).1;
         let line_h = ascent + LINE_GAP;
-        // max_y derived from region.height, leaving 2px above the stock strip
-        let max_y  = region.y + region.height - 2;
+        // max_y allows one extra line beyond region height to reveal clipping
+        let max_y  = region.y + region.height - 2 + line_h;
         let mut y  = region.y + Y_START;
 
         if stale {
