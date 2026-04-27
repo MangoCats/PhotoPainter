@@ -13,7 +13,8 @@ const LINE_GAP:    i32 = 4;
 const TXN_GAP:     i32 = 3;
 const Y_START:     i32 = rain::GCAL_Y_START;
 const MAX_TXN:     usize = 5;
-const STALE_AFTER: Duration = Duration::from_secs(3600);
+const STALE_AFTER:    Duration = Duration::from_secs(3600);
+const FETCH_INTERVAL: Duration = Duration::from_secs(20 * 60);
 
 // Total lines rendered: 1 balance + up to MAX_TXN transactions.
 // Called by renderer to compute where gcal sits below the bank block.
@@ -24,7 +25,7 @@ pub fn display_height() -> i32 {
     txn_h * MAX_TXN as i32
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct Transaction {
     amount:  f64,    // Teller: negative = debit (out), positive = credit (in)
     name:    String,
@@ -32,7 +33,7 @@ struct Transaction {
     pending: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct BankData {
     balance:      f64,
     transactions: Vec<Transaction>,
@@ -74,13 +75,27 @@ impl BankModule {
         builder.build().expect("failed to build teller HTTP client")
     }
 
-    pub async fn refresh(&self) {
+    // Returns true if data changed (caller should trigger a repaint).
+    pub async fn refresh(&self) -> bool {
+        let due = self.last_ok.lock().unwrap()
+            .map(|t| t.elapsed() >= FETCH_INTERVAL)
+            .unwrap_or(true);
+        if !due { return false; }
+
         match self.fetch().await {
-            Ok(data) => {
-                *self.data.lock().unwrap()    = Some(data);
+            Ok(new_data) => {
+                let changed = self.data.lock().unwrap()
+                    .as_ref()
+                    .map(|old| old != &new_data)
+                    .unwrap_or(true);
+                *self.data.lock().unwrap()    = Some(new_data);
                 *self.last_ok.lock().unwrap() = Some(Instant::now());
+                changed
             }
-            Err(e) => tracing::warn!("bank fetch failed: {e}"),
+            Err(e) => {
+                tracing::warn!("bank fetch failed: {e}");
+                false
+            }
         }
     }
 
