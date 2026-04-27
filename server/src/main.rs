@@ -127,7 +127,7 @@ async fn do_render(state: &AppState, show_version: bool) -> RenderedImage {
             (&clock,      full_screen()),
             (&icon_mtrx,  if weekend { weekend_gcal_region() } else { gcal_region() }),
         ];
-        return render(modules, SERVER_VERSION, &fw_ver, show_version, &state.stock, weekend);
+        return render(modules, SERVER_VERSION, &fw_ver, show_version, &state.stock, weekend, false);
     }
 
     if state.bank_mode {
@@ -136,10 +136,10 @@ async fn do_render(state: &AppState, show_version: bool) -> RenderedImage {
             (&clock,         full_screen()),
             (&state.rain,    full_screen()),
             (&state.weather, full_screen()),
-            (&state.bank,    if weekend { weekend_gcal_region() } else { gcal_region() }),
-            (&state.gcal,    if weekend { weekend_gcal_below_bank_region(bank_h) } else { gcal_below_bank_region(bank_h) }),
+            (&state.bank,    weekend_gcal_region()),
+            (&state.gcal,    weekend_gcal_below_bank_region(bank_h)),
         ];
-        return render(modules, SERVER_VERSION, &fw_ver, show_version, &state.stock, weekend);
+        return render(modules, SERVER_VERSION, &fw_ver, show_version, &state.stock, weekend, true);
     }
 
     let modules: &[(&dyn crate::modules::Module, _)] = &[
@@ -148,7 +148,7 @@ async fn do_render(state: &AppState, show_version: bool) -> RenderedImage {
         (&state.weather, full_screen()),
         (&state.gcal,    if weekend { weekend_gcal_region() } else { gcal_region() }),
     ];
-    render(modules, SERVER_VERSION, &fw_ver, show_version, &state.stock, weekend)
+    render(modules, SERVER_VERSION, &fw_ver, show_version, &state.stock, weekend, false)
 }
 
 // ── Ticker config ─────────────────────────────────────────────────────────────
