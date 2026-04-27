@@ -68,15 +68,30 @@ Run the OAuth flow once more (Part B, Step 4 below) using your existing
    Save the file as `client_secret.json` somewhere convenient (not in the repo).
 6. Note the **Client ID** and **Client Secret** shown on screen — these go into `gcal_creds.rs`.
 
+> **Already have a client ID and can't download the JSON?**  
+> Google no longer allows viewing or downloading secrets for existing OAuth clients.
+> Simply create a new one: repeat steps 2–5 above (name it e.g. `PhotoPainter desktop 2`).
+> The **Download JSON** button appears only on the confirmation dialog immediately after
+> creation — download it before closing that dialog.  The old client ID can be left or deleted.
+
 ### B4 — Run the one-time OAuth flow to get a refresh token
 
-This requires Python 3 and one package.  Open a terminal:
+`client_secret.json` (downloaded in Step B3) and the `get_token.py` script below are
+**temporary setup files — they do not belong in the project repo.**  Place them anywhere
+convenient outside the project, for example `C:\Users\Mango Cat\gcal-setup\`.
+
+This requires Python 3 and one package.  On Raspberry Pi OS / Debian, `pip` is
+restricted system-wide — use a virtual environment instead (safe, self-contained,
+delete it when done).
+
+Open a terminal and `cd` to the folder containing `client_secret.json`, then:
 
 ```bash
-pip install google-auth-oauthlib
+python3 -m venv venv
+venv/bin/pip install google-auth-oauthlib
 ```
 
-Save the following as `get_token.py` in the same folder as `client_secret.json`:
+Create `get_token.py` in the same folder:
 
 ```python
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -92,11 +107,13 @@ print('CLIENT_SECRET:', creds.client_secret)
 print('REFRESH_TOKEN:', creds.refresh_token)
 ```
 
-Run it:
+Run it using the venv's Python:
 
 ```bash
-python get_token.py
+venv/bin/python get_token.py
 ```
+
+Once you have the three values you can delete the `venv/` folder.
 
 A browser window opens automatically.  Log in with your Google account, click through
 the "unverified app" warning (click **Advanced → Go to PhotoPainter (unsafe)**), and
