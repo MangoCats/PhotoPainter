@@ -143,7 +143,7 @@ impl Module for BankModule {
         let mut y  = region.y + Y_START - bal_h;
 
         if stale {
-            canvas.fill_rect(region.x, y, region.width / 3, bal_h, E6Color::Red);
+            canvas.fill_rect(region.x, y, region.width * 2 / 5, bal_h, E6Color::Red);
             draw_text(canvas, region.x + MARGIN, y, "(bank offline)", SIZE_PX, E6Color::White, false);
             y += bal_h;
             if data.is_none() { return; }
@@ -153,7 +153,7 @@ impl Module for BankModule {
 
         // Balance line: black on yellow, left third of screen only
         let bal_text = format!("Balance: {}", fmt_dollars(data.balance));
-        canvas.fill_rect(region.x, y, region.width / 3, bal_h, E6Color::Yellow);
+        canvas.fill_rect(region.x, y, region.width * 2 / 5, bal_h, E6Color::Yellow);
         draw_text(canvas, region.x + MARGIN, y, &bal_text, SIZE_PX, E6Color::Black, false);
         y += bal_h;
 
