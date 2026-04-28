@@ -119,6 +119,8 @@ impl BankModule {
             .basic_auth(ACCESS_TOKEN, Some(""))
             .send().await?.json().await?;
 
+        let diag = std::env::var("BANK_DIAG").is_ok();
+
         let transactions = txns.as_array()
             .map(|arr| {
                 arr.iter().take(MAX_TXN).filter_map(|t| {
@@ -129,6 +131,24 @@ impl BankModule {
                         .or_else(|| t["description"].as_str())
                         .unwrap_or("Unknown")
                         .to_string();
+
+                    if diag {
+                        let status  = t["status"].as_str().unwrap_or("?");
+                        let date    = t["date"].as_str().unwrap_or("?");
+                        let cp_name = t["details"]["counterparty"]["name"].as_str().unwrap_or("(none)");
+                        let cp_type = t["details"]["counterparty"]["type"].as_str().unwrap_or("(none)");
+                        let desc    = t["description"].as_str().unwrap_or("(none)");
+                        let cat     = t["details"]["category"].as_str().unwrap_or("(none)");
+                        tracing::debug!(
+                            date, status,
+                            counterparty_name = cp_name,
+                            counterparty_type = cp_type,
+                            description = desc,
+                            category = cat,
+                            amount = t["amount"].as_str().unwrap_or("?"),
+                            "bank txn raw fields"
+                        );
+                    }
                     let pending = t["status"].as_str() == Some("pending");
                     let raw     = t["date"].as_str().unwrap_or("");
                     let date    = if raw.len() == 10 {
