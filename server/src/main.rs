@@ -32,7 +32,7 @@ use modules::icon_matrix::IconMatrixModule;
 use modules::rain::{RainModule, NearTermRain};
 use modules::stock::StockModule;
 use modules::weather::{WeatherModule, WeatherData};
-use renderer::{render, full_screen, gcal_region, gcal_below_bank_region, weekend_gcal_region, weekend_gcal_below_bank_region, RenderedImage};
+use renderer::{render, full_screen, gcal_region, weekend_gcal_region, weekend_gcal_below_bank_region, RenderedImage};
 
 const SERVER_VERSION: &str = env!("GIT_VERSION");
 
