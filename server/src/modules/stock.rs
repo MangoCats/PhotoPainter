@@ -82,9 +82,9 @@ impl StockModule {
         let n           = quotes.len() as i32;
         let total_div_w = (n - 1) * DIVIDER_W;
         let base_sec_w  = (SCREEN_W - total_div_w) / n;
-        // Strip background starts 6px lower than the region boundary; text sits 4px above screen bottom.
-        let strip_y     = SCREEN_H - STRIP_H + 6;
-        let strip_draw_h = STRIP_H - 6;
+        // Strip background starts 12px lower than the region boundary; text sits 4px above screen bottom.
+        let strip_y      = SCREEN_H - STRIP_H + 12;
+        let strip_draw_h = STRIP_H - 12;
 
         // Choose font size so the widest label fits within a section
         let longest = quotes.iter()
