@@ -127,10 +127,15 @@ impl BankModule {
                     // Teller returns amounts as decimal strings; negative = debit (money out)
                     let amount  = t["amount"].as_str()
                         .and_then(|s| s.parse::<f64>().ok())?;
-                    let name    = t["details"]["counterparty"]["name"].as_str()
-                        .or_else(|| t["description"].as_str())
-                        .unwrap_or("Unknown")
-                        .to_string();
+                    // Pending: counterparty_name is clean. Posted: description has full merchant info.
+                    let pending_here = t["status"].as_str() == Some("pending");
+                    let name = if pending_here {
+                        t["details"]["counterparty"]["name"].as_str()
+                            .or_else(|| t["description"].as_str())
+                    } else {
+                        t["description"].as_str()
+                            .or_else(|| t["details"]["counterparty"]["name"].as_str())
+                    }.unwrap_or("Unknown").to_string();
 
                     if diag {
                         let status  = t["status"].as_str().unwrap_or("?");
