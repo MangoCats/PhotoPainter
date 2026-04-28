@@ -83,8 +83,8 @@ impl StockModule {
         let total_div_w = (n - 1) * DIVIDER_W;
         let base_sec_w  = (SCREEN_W - total_div_w) / n;
         // Strip background starts 12px lower than the region boundary; text sits 4px above screen bottom.
-        let strip_y      = SCREEN_H - STRIP_H + 12;
-        let strip_draw_h = STRIP_H - 12;
+        let strip_y      = SCREEN_H - STRIP_H + 16;
+        let strip_draw_h = STRIP_H - 16;
 
         // Choose font size so the widest label fits within a section
         let longest = quotes.iter()
