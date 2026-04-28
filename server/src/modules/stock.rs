@@ -82,7 +82,9 @@ impl StockModule {
         let n           = quotes.len() as i32;
         let total_div_w = (n - 1) * DIVIDER_W;
         let base_sec_w  = (SCREEN_W - total_div_w) / n;
-        let strip_y     = SCREEN_H - STRIP_H;
+        // Strip background starts 6px lower than the region boundary; text sits 4px above screen bottom.
+        let strip_y     = SCREEN_H - STRIP_H + 6;
+        let strip_draw_h = STRIP_H - 6;
 
         // Choose font size so the widest label fits within a section
         let longest = quotes.iter()
@@ -98,18 +100,18 @@ impl StockModule {
         }
 
         let ascent = measure_text("A", font_size, false).1;
-        let text_y = strip_y + (STRIP_H - ascent) / 2;
+        let text_y = SCREEN_H - ascent - 4;
 
         let mut x = 0i32;
         for (i, q) in quotes.iter().enumerate() {
             if i > 0 {
-                canvas.fill_rect(x, strip_y, DIVIDER_W, STRIP_H, E6Color::White);
+                canvas.fill_rect(x, strip_y, DIVIDER_W, strip_draw_h, E6Color::White);
                 x += DIVIDER_W;
             }
             // Last section absorbs any remainder from integer division
             let sec_w = if i as i32 == n - 1 { SCREEN_W - x } else { base_sec_w };
             let bg    = if q.price >= q.open { E6Color::Green } else { E6Color::Red };
-            canvas.fill_rect(x, strip_y, sec_w, STRIP_H, bg);
+            canvas.fill_rect(x, strip_y, sec_w, strip_draw_h, bg);
 
             let txt     = make_label(q, stale);
             let (tw, _) = measure_text(&txt, font_size, false);
