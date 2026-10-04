@@ -88,10 +88,13 @@ X-Server-Time: 1745123456
 Cache-Control: no-store
 ```
 
+All responses carry `Connection: close`. The device deep-sleeps with its radio off straight after a poll and never closes
+its TCP socket, so without it every full-image fetch leaked one socket on the server until its file-descriptor limit was hit.
+
 **`X-Poll-Interval`** — seconds until the device should poll again.
 - **11:00 PM – 5:45 AM:** 3600 s (overnight; device wakes once per hour).
 - **5:45 AM – 6:45 AM:** exact seconds remaining until 6:45 AM (one final long sleep that lands precisely at wake-up time).
-- **6:45 AM – 11:00 PM:** 60 s (daytime; normal 1-minute cadence).
+- **6:45 AM – 11:00 PM:** 300 s (daytime; 5-minute cadence).
 - Device clamps received value to [60, 3600]; stores in RTC memory.
 
 **`X-Server-Time`** — Unix timestamp (UTC seconds) at response generation time.
@@ -285,6 +288,9 @@ At a 60-second poll interval: 60 cycles/hr × 0.084 mAh = **~5 mAh/hr** baseline
 
 ## Server Design (`server/`)
 
+Two HTTP listeners run in one process: the device API on port **7654** (`GET /api/image`) and an unauthenticated browser
+preview on port **17654** (`/` is a page that reloads every 60 s; `/image.png` is the current image, de-rotated and in RGB).
+
 ### Technology Stack
 
 - **Language:** Rust
@@ -292,7 +298,7 @@ At a 60-second poll interval: 60 cycles/hr × 0.084 mAh = **~5 mAh/hr** baseline
 - **Font rendering:** `fontdue` TTF rasterizer with JetBrains Mono Regular and Bold
 - **Image composition:** direct E6 pixel buffer — no RGB intermediary, no dithering
 - **External data:** `reqwest` with `rustls-tls` (no OpenSSL dependency)
-- **Time:** `chrono` for date/time formatting; `std::time::Instant` for token expiry
+- **Time:** `chrono` for date/time formatting; `std::time::Instant` for refresh throttling
 - **Hashing:** `sha2` (SHA-256) for ETag generation
 
 ### Render Architecture
@@ -336,7 +342,7 @@ Data modules refresh in parallel
 Each module renders into E6Canvas [u8; 384000] (one byte per pixel)
         │
         ▼
-Bottom 48px: stock strip (normal mode only) or version bar (first render)
+Bottom: stock strip (y=448..480) or version bar (first render)
         │
         ▼
 Pack to 4bpp → [u8; 192000]
@@ -369,7 +375,7 @@ Values 0x4 and 0x7 render as dark brown/purple on this panel and are excluded.
 
 All coordinates are pixels from top-left (0,0). Screen is 800 × 480 px landscape.
 
-### Normal mode (weekdays 8:00 AM – 3:00 PM)
+### Layout
 
 ```
 y=0   ┌──────────────────────────────────────────────────────────────────────┐
@@ -387,8 +393,8 @@ y=128 ├── Schedule (mangoSched) — one column per day ──────�
       │ open shift = white box with black outline                             │
       │ ...a day continues in the next column when its boxes do not fit...    │
 y=430 ├───────────────────────────────────────────────────────────────────────┤
-      │  2px gap                                                              │
-y=432 ├── Stock Strip (48px) ─────────────────────────────────────────────────┤
+      │  18px empty (the strip is 48px of allowance but only 32px tall)       │
+y=448 ├── Stock Strip (32px) ─────────────────────────────────────────────────┤
       │  ▓▓▓ MDT ▓▓▓│▓▓▓ RKLB ▓▓▓│▓▓▓ TSLA ▓▓▓│▓▓▓ BRK.B ▓▓▓              │
       │  green=up/flat, red=down vs open; white text; 5px white dividers      │
 y=480 └───────────────────────────────────────────────────────────────────────┘
@@ -451,15 +457,19 @@ y=480 └───────────────────────�
 - **Refresh:** every 10 minutes (2 minutes after a network failure). Stale after 1 hour: a red banner reads
   `(schedule offline)`; auth problems read `(schedule login failed)` / `(schedule not configured)`.
 - **Scope:** today and every later day on the page. Past days are dropped; empty days are kept (label + "no shifts").
-- **Layout:** 5 columns, 3 px apart. Each day starts in a new column: a header (black bar, white text; today is a white bar
-  with a black frame and bold text), then one box per shift. If the next box does not fit, the day continues in the next
-  column with the header repeated and ` ›` appended. Days are placed until there is no room for another column.
-- **Box:** 14 px text. Line 1: compact time and worker short name (`9:30a-12p Jo`; overnight `10p→6a`); then the shift type,
-  word-wrapped to two lines. Open shifts show `OPEN`.
+- **Layout:** 5 columns, 3 px apart. Each day starts in a new column: a 29 px header (black bar with a 19 px white label; today
+  is a white bar with a black frame and a bold label), then one box per shift, 2 px apart. If the next box does not fit, the
+  day continues in the next column with the header repeated and ` ›` appended. Days are placed until there is no room for
+  another column. If the last column fills up in the middle of a day, that column's header shows `+N` (the number of
+  shifts that did not fit) so nothing is dropped silently.
+- **Box:** 16 px text on an 18 px line pitch, 1 px vertical padding. Line 1: compact time and worker short name
+  (`9:30a-12p Jo`; overnight `10p→6a`); if the two do not fit together the worker moves to its own line. Then the shift
+  type, word-wrapped to at most three lines. Open shifts show `OPEN`. Times follow the viewer account's own time zone and
+  12/24-hour setting (a 24-hour setting is shown as-is and will truncate sooner).
 - **Colors:** the worker's calendar color mapped to the nearest ink: blue, cyan, purple, lavender → blue (white text);
   red, pink, orange, brown → red (white text); yellow → yellow (black text); lime-green, dark-green → green (black text).
   Open shifts: white box, black outline. The worker's name distinguishes workers who share an ink.
-- **Position:** y=128 downward, full width; the bottom is the region bottom (stock strip excluded on weekdays).
+- **Position:** y=128 downward, full width; the bottom is y=430 (`gcal_region()`: screen height minus the 48 px strip allowance).
 
 ### Stock Quotes (`stock.rs`)
 
@@ -469,7 +479,7 @@ y=480 └───────────────────────�
   - Up/down vs `o` (open); falls back to `pc` when market hasn't opened yet (flat)
 - **Credentials:** `stock_creds.rs` (gitignored) — API_KEY
 - **Ticker config:** `stock_tickers.txt` in server working directory, one symbol per line, `#` comments supported; read once at server startup
-- **Position:** bottom 48px strip (y=432 to y=480)
+- **Position:** coloured boxes y=448 to y=480 (32 px); the 48 px `STRIP_H` is the space the schedule region leaves free
 - **Layout:** equal-width sections separated by 5px white vertical dividers
 - **Font:** auto-sized from max 43px down to fit the widest label; centered in each section
 - **Color:** green background = price ≥ open; red background = price < open; white text
@@ -508,8 +518,8 @@ The `.rs` credential files must be created manually on each deployment — they 
 | 13 | Bank mode schedule | *Removed with the bank module.* Every day: schedule above, stock strip below (the former weekend full-height layout without the strip was dropped 2026-10) |
 | 14 | Poll interval | Three-zone: 3600 s overnight, countdown to 6:45 AM, 300 s daytime |
 | 15 | Calendar scope | mangoSched schedule: today + every later day on its calendar page, one column per day (overflow continues in the next column) |
-| 17 | Calendar source | mangoSched viewer-account login (runtime credentials, self-renewing session); replaced Google Calendar 2026-10 |
 | 16 | Bank query rate | *Removed with the bank module* |
+| 17 | Calendar source | mangoSched viewer-account login (runtime credentials, self-renewing session); replaced Google Calendar 2026-10 |
 
 ---
 

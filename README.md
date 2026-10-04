@@ -27,6 +27,8 @@ PhotoPainter/
 ├── server/                    # Rust dashboard server (runs on Raspberry Pi)
 │   ├── Cargo.toml
 │   ├── stock_tickers.txt      # One ticker symbol per line; read at startup
+│   ├── photopainter.service   # systemd unit (Restart=always, LimitNOFILE, journald logging)
+│   ├── testdata/              # Synthetic mangoSched calendar page used by the parser tests
 │   └── src/
 │       ├── main.rs            # axum HTTP server on :7654, background render task, poll intervals
 │       ├── renderer.rs        # Compose modules onto canvas, pack to 4bpp, SHA-256 ETag
@@ -103,7 +105,8 @@ cargo build --release
 ./target/release/photopainter-server
 ```
 
-Listens on `0.0.0.0:7654`. Set `RUST_LOG=info` for request logging.
+Listens on `0.0.0.0:7654` (device API) and `0.0.0.0:17654` (unauthenticated browser preview of the current image: open
+`http://<server>:17654/`). Set `RUST_LOG=info` for request logging. `cargo test --release` runs the parser and layout tests.
 
 #### Optional environment variables
 
@@ -150,6 +153,9 @@ login script (`~/.profile`) — the two would fight over port 7654.
 | `X-Poll-Interval` | →device | Suggested sleep duration (seconds) |
 | `X-Server-Time` | →device | Unix epoch; firmware syncs RTC if delta > 30 s |
 | `X-Device-ID` | →server | Device MAC address |
+| `X-Firmware-Version` | →server | Firmware git hash; a change makes the server re-render immediately |
+| `X-Battery` | →server | `pct=…, mv=…, hrs=…, status=…` (see DESIGN.md); drives the battery indicator |
+| `Connection: close` | →device | Sent on every response so the server frees each socket itself |
 
 A `304 Not Modified` response means the image hasn't changed; the firmware skips the display update and goes back to sleep without touching the EPD.
 

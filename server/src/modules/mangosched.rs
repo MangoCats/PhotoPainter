@@ -37,17 +37,17 @@ const STALE_AFTER:          Duration = Duration::from_secs(60 * 60);
 
 // ── Layout ────────────────────────────────────────────────────────────────────
 
-const COLS:        i32 = 6;      // columns across the screen
+const COLS:        i32 = 5;      // columns across the screen
 const COL_GAP:     i32 = 3;
-const HEADER_H:    i32 = 24;     // day label bar
-const HEADER_PX:   f32 = 16.0;
-const BOX_PX:      f32 = 13.0;
+const HEADER_H:    i32 = 29;     // day label bar
+const HEADER_PX:   f32 = 19.0;
+const BOX_PX:      f32 = 16.0;
 const BOX_PAD_X:   i32 = 4;
-const BOX_PAD_Y:   i32 = 2;
+const BOX_PAD_Y:   i32 = 1;
 const BOX_GAP:     i32 = 2;
 const BANNER_H:    i32 = 22;
 const BANNER_PX:   f32 = 18.0;
-const MAX_TYPE_LINES: usize = 2;
+const MAX_TYPE_LINES: usize = 3;
 
 // ── Data ──────────────────────────────────────────────────────────────────────
 
@@ -312,9 +312,12 @@ pub struct Placed {
 
 /// Lay days out column by column.  A day's boxes stack under its label; when the next box
 /// would not fit, the day continues in the next column (label repeated).  The next day
-/// always starts in a fresh column, and nothing is placed once the columns run out.
-pub fn layout(days: &[Day], geo: &Geometry, box_h: &dyn Fn(&Shift) -> i32) -> Vec<Placed> {
+/// always starts in a fresh column, and nothing is placed once the columns run out.  If the
+/// columns run out in the middle of a day, the second value says which column and how many
+/// of that day's shifts did not fit, so the caller can flag it rather than drop them silently.
+pub fn layout(days: &[Day], geo: &Geometry, box_h: &dyn Fn(&Shift) -> i32) -> (Vec<Placed>, Option<(i32, usize)>) {
     let mut out = Vec::new();
+    let mut cut = None;
     let mut col = 0;
     let first_y = geo.top + HEADER_H + BOX_GAP;
     'days: for (di, day) in days.iter().enumerate() {
@@ -325,7 +328,7 @@ pub fn layout(days: &[Day], geo: &Geometry, box_h: &dyn Fn(&Shift) -> i32) -> Ve
             let h = box_h(shift);
             if y + h > geo.bottom && y > first_y {
                 col += 1;
-                if col >= COLS { break 'days; }
+                if col >= COLS { cut = Some((COLS - 1, day.shifts.len() - si)); break 'days; }
                 out.push(Placed { col, day: di, shift: None, cont: true, y: geo.top, h: HEADER_H });
                 y = first_y;
             }
@@ -334,7 +337,7 @@ pub fn layout(days: &[Day], geo: &Geometry, box_h: &dyn Fn(&Shift) -> i32) -> Ve
         }
         col += 1;
     }
-    out
+    (out, cut)
 }
 
 // ── Drawing ───────────────────────────────────────────────────────────────────
@@ -368,7 +371,7 @@ fn wrap(text: &str, max_chars: usize, max_lines: usize) -> Vec<String> {
 }
 
 fn char_w() -> i32 { measure_text("M", BOX_PX, false).0.max(1) }
-fn line_h() -> i32 { BOX_PX as i32 + 3 }
+fn line_h() -> i32 { BOX_PX as i32 + 2 }
 
 /// Text lines for one box: time and worker (together if they fit, else on two lines), then the
 /// shift type (wrapped).
@@ -495,7 +498,7 @@ impl Module for MangoSchedModule {
         }
         let geo = Geometry { x: region.x, top, bottom: region.y + region.height - 2, width: region.width };
         let inner_w = geo.col_w() - 2 * BOX_PAD_X;
-        let placed = layout(&days, &geo, &|s| box_height(s, inner_w));
+        let (placed, cut) = layout(&days, &geo, &|s| box_height(s, inner_w));
         let col_w = geo.col_w();
 
         for p in &placed {
@@ -512,6 +515,13 @@ impl Module for MangoSchedModule {
                     } else {
                         canvas.fill_rect(x, p.y, col_w, p.h, E6Color::Black);
                         draw_text(canvas, x + 6, p.y + 3, &label, HEADER_PX, E6Color::White, false);
+                    }
+                    if let Some((cut_col, n)) = cut {
+                        if cut_col == p.col {
+                            let tag = format!("+{n}");
+                            let w = measure_text(&tag, HEADER_PX, true).0;
+                            draw_text(canvas, x + col_w - w - 6, p.y + 3, &tag, HEADER_PX, if today { E6Color::Black } else { E6Color::White }, true);
+                        }
                     }
                     if day.shifts.is_empty() {
                         draw_text(canvas, x + 6, p.y + p.h + 4, "no shifts", BOX_PX, E6Color::Black, false);
@@ -588,7 +598,7 @@ mod tests {
         let geo = Geometry { x: 0, top: 128, bottom: 428, width: 800 };
         let h = |_: &Shift| 40;                       // (428-128-24-2) / 42 = 6 boxes per column
         let days = vec![day(0, 3), day(1, 9), day(2, 0), day(3, 2), day(4, 1), day(5, 1), day(6, 1), day(7, 1), day(8, 1)];
-        let placed = layout(&days, &geo, &h);
+        let (placed, cut) = layout(&days, &geo, &h);
 
         // each day starts in a fresh column, and a column never mixes days
         let mut col_day = std::collections::HashMap::new();
@@ -609,12 +619,23 @@ mod tests {
         assert!(placed.iter().all(|p| p.col < COLS));
         // nothing below the bottom
         assert!(placed.iter().all(|p| p.y + p.h <= geo.bottom));
+        assert!(cut.is_none(), "nothing was cut mid-day in this scenario");
+    }
+
+    #[test]
+    fn flags_shifts_that_do_not_fit() {
+        let geo = Geometry { x: 0, top: 128, bottom: 428, width: 800 };
+        // 6 boxes per column; one day with 6 * COLS + 4 shifts cannot fit in COLS columns
+        let n = 6 * COLS as usize + 4;
+        let (placed, cut) = layout(&[day(0, n)], &geo, &|_| 40);
+        assert_eq!(placed.iter().filter(|p| p.shift.is_some()).count(), 6 * COLS as usize);
+        assert_eq!(cut, Some((COLS - 1, 4)));
     }
 
     #[test]
     fn oversized_box_still_terminates() {
         let geo = Geometry { x: 0, top: 128, bottom: 200, width: 800 };
-        let placed = layout(&[day(0, 3)], &geo, &|_| 500);
+        let (placed, _) = layout(&[day(0, 3)], &geo, &|_| 500);
         assert!(placed.iter().filter(|p| p.shift.is_some()).count() <= 3);
     }
 
