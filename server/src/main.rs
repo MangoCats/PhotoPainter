@@ -29,12 +29,35 @@ use modules::mangosched::MangoSchedModule;
 use modules::rain::{RainModule, NearTermRain};
 use modules::stock::StockModule;
 use modules::weather::{WeatherModule, WeatherData};
-use renderer::{render, full_screen, gcal_region, RenderedImage};
+use renderer::{render, full_screen, schedule_region, RenderedImage};
 
 const SERVER_VERSION: &str = env!("GIT_VERSION");
 
 // ── Significant-change tracking ───────────────────────────────────────────────
 
+/// Everything that can make the screen out of date, sampled at one moment.
+struct Inputs {
+    weather:       Option<WeatherData>,
+    near_rain:     NearTermRain,
+    batt_pct:      Option<i32>,
+    batt_charging: Option<bool>,
+    weather_stale: bool,
+    sched_rev:     u64,
+}
+
+fn sample_inputs(state: &AppState) -> Inputs {
+    let battery = state.weather.peek_battery();
+    Inputs {
+        weather:       state.weather.peek(),
+        near_rain:     state.rain.peek_near(),
+        batt_pct:      battery.as_ref().map(|b| b.pct),
+        batt_charging: battery.as_ref().map(|b| b.charging),
+        weather_stale: state.weather.is_stale(),
+        sched_rev:     state.sched.revision(),
+    }
+}
+
+/// What the currently served image was drawn from.
 struct DisplayedState {
     refresh_time:   DateTime<Local>,
     current_temp_f: i32,
@@ -43,30 +66,29 @@ struct DisplayedState {
     near_rain:      NearTermRain,
     batt_pct:       Option<i32>,
     batt_charging:  Option<bool>,
+    weather_stale:  bool,
+    sched_rev:      u64,
 }
 
-fn is_significant_change(
-    displayed:    &DisplayedState,
-    weather:      Option<WeatherData>,
-    near_rain:    NearTermRain,
-    batt_pct:     Option<i32>,
-    batt_charging: Option<bool>,
-    now:          DateTime<Local>,
-) -> bool {
+fn is_significant_change(displayed: &DisplayedState, cur: &Inputs, now: DateTime<Local>) -> bool {
     if now.signed_duration_since(displayed.refresh_time).num_minutes() > 60 {
         return true;
     }
-    if let Some(w) = weather {
+    if let Some(w) = cur.weather {
         if (w.current_f - displayed.current_temp_f).abs() >= 2 { return true; }
         if (w.high_f - displayed.high_f).abs() >= 3 { return true; }
         if (w.low_f  - displayed.low_f).abs()  >= 3 { return true; }
     }
-    if near_rain != displayed.near_rain { return true; }
+    if cur.near_rain != displayed.near_rain { return true; }
     // Battery: charging state changed, or charge level shifted ≥5%
-    if batt_charging != displayed.batt_charging { return true; }
-    if let (Some(cur), Some(prev)) = (batt_pct, displayed.batt_pct) {
-        if (cur - prev).abs() >= 5 { return true; }
+    if cur.batt_charging != displayed.batt_charging { return true; }
+    if let (Some(c), Some(p)) = (cur.batt_pct, displayed.batt_pct) {
+        if (c - p).abs() >= 5 { return true; }
     }
+    // Weather went stale (grey background) or recovered
+    if cur.weather_stale != displayed.weather_stale { return true; }
+    // The schedule changed (including its day labels rolling over at midnight)
+    if cur.sched_rev != displayed.sched_rev { return true; }
     false
 }
 
@@ -84,17 +106,10 @@ struct AppState {
 }
 type SharedState = Arc<AppState>;
 
-async fn commit_displayed(
-    state:         &AppState,
-    now:           DateTime<Local>,
-    weather:       Option<WeatherData>,
-    near_rain:     NearTermRain,
-    batt_pct:      Option<i32>,
-    batt_charging: Option<bool>,
-) {
+async fn commit_displayed(state: &AppState, now: DateTime<Local>, inp: Inputs) {
     let mut guard = state.displayed.write().await;
     let prev = guard.as_ref();
-    let (current_temp_f, high_f, low_f) = weather
+    let (current_temp_f, high_f, low_f) = inp.weather
         .map(|w| (w.current_f, w.high_f, w.low_f))
         .or_else(|| prev.map(|d| (d.current_temp_f, d.high_f, d.low_f)))
         .unwrap_or((0, 0, 0));
@@ -103,9 +118,11 @@ async fn commit_displayed(
         current_temp_f,
         high_f,
         low_f,
-        near_rain,
-        batt_pct:      batt_pct.or_else(|| prev.and_then(|d| d.batt_pct)),
-        batt_charging: batt_charging.or_else(|| prev.and_then(|d| d.batt_charging)),
+        near_rain:     inp.near_rain,
+        batt_pct:      inp.batt_pct.or_else(|| prev.and_then(|d| d.batt_pct)),
+        batt_charging: inp.batt_charging.or_else(|| prev.and_then(|d| d.batt_charging)),
+        weather_stale: inp.weather_stale,
+        sched_rev:     inp.sched_rev,
     });
 }
 
@@ -119,7 +136,7 @@ async fn do_render(state: &AppState, show_version: bool) -> RenderedImage {
     if state.icon_matrix_mode {
         let modules: &[(&dyn crate::modules::Module, _)] = &[
             (&clock,      full_screen()),
-            (&icon_mtrx,  gcal_region()),
+            (&icon_mtrx,  schedule_region()),
         ];
         return render(modules, SERVER_VERSION, &fw_ver, show_version, &state.stock);
     }
@@ -128,7 +145,7 @@ async fn do_render(state: &AppState, show_version: bool) -> RenderedImage {
         (&clock,         full_screen()),
         (&state.rain,    full_screen()),
         (&state.weather, full_screen()),
-        (&state.sched,   gcal_region()),
+        (&state.sched,   schedule_region()),
     ];
     render(modules, SERVER_VERSION, &fw_ver, show_version, &state.stock)
 }
@@ -153,20 +170,17 @@ fn load_tickers() -> Vec<String> {
 
 async fn render_loop(state: SharedState) {
     loop {
-        let now       = Local::now();
+        let now = Local::now();
 
+        // Each module throttles itself (weather and rain every 5 minutes, schedule every 10).
         tokio::join!(state.weather.refresh(), state.rain.refresh(), state.sched.refresh());
-        let weather   = state.weather.peek();
-        let near_rain = state.rain.peek_near();
-        let battery   = state.weather.peek_battery();
-        let batt_pct      = battery.as_ref().map(|b| b.pct);
-        let batt_charging = battery.as_ref().map(|b| b.charging);
+        let inputs = sample_inputs(&state);
 
         let should_render = {
             let ds = state.displayed.read().await;
             match ds.as_ref() {
                 None     => true,
-                Some(ds) => is_significant_change(ds, weather, near_rain.clone(), batt_pct, batt_charging, now),
+                Some(ds) => is_significant_change(ds, &inputs, now),
             }
         };
 
@@ -174,13 +188,9 @@ async fn render_loop(state: SharedState) {
             state.stock.refresh().await;
             let image = do_render(&state, false).await;
             *state.image.write().await = image;
-            commit_displayed(&state, now, weather, near_rain, batt_pct, batt_charging).await;
-            tracing::info!(
-                current = weather.map(|w| w.current_f).unwrap_or(0),
-                high    = weather.map(|w| w.high_f).unwrap_or(0),
-                low     = weather.map(|w| w.low_f).unwrap_or(0),
-                "screen refreshed"
-            );
+            let (current, high, low) = inputs.weather.map(|w| (w.current_f, w.high_f, w.low_f)).unwrap_or((0, 0, 0));
+            commit_displayed(&state, now, inputs).await;
+            tracing::info!(current, high, low, "screen refreshed");
         }
 
         tokio::time::sleep(Duration::from_secs(60)).await;
@@ -199,7 +209,7 @@ async fn get_image(
         .unwrap_or("unknown")
         .to_string();
 
-    // Parse battery header; update weather module so next render reflects it
+    // Parse the battery header; the weather module holds the reading so the next render shows it
     let batt_info = req.headers()
         .get("x-battery")
         .and_then(|v| v.to_str().ok())
@@ -213,24 +223,24 @@ async fn get_image(
     }
     state.weather.update_battery(batt_info);
 
-    // Firmware version change → re-render immediately with updated version string
+    // New firmware version → re-render immediately.  After a server restart the version is merely
+    // learned again ("unknown" → X) and the screen is redrawn as usual; a change from a known
+    // version means new firmware was flashed, so the SV/FW bar replaces the stock strip until the
+    // next render.
     if let Some(new_fw) = req.headers()
         .get("x-firmware-version")
         .and_then(|v| v.to_str().ok())
     {
         let mut fw = state.fw_version.write().await;
         if fw.as_str() != new_fw {
+            let first_seen = fw.as_str() == "unknown";
             tracing::info!("Firmware version updated: {:?} → {:?}", *fw, new_fw);
             *fw = new_fw.to_string();
             drop(fw);
-            let now       = Local::now();
-            let weather   = state.weather.peek();
-            let near_rain = state.rain.peek_near();
-            let batt_pct      = state.weather.peek_battery().as_ref().map(|b| b.pct);
-            let batt_charging = state.weather.peek_battery().as_ref().map(|b| b.charging);
-            let new_image = do_render(&state, false).await;
+            let inputs    = sample_inputs(&state);
+            let new_image = do_render(&state, !first_seen).await;
             *state.image.write().await = new_image;
-            commit_displayed(&state, now, weather, near_rain, batt_pct, batt_charging).await;
+            commit_displayed(&state, Local::now(), inputs).await;
         }
     }
 
@@ -301,7 +311,7 @@ const E6_PALETTE: [(u8, u8, u8); 16] = {
 
 fn packed_to_png(packed: &[u8]) -> Vec<u8> {
     let mut rgb = Vec::with_capacity((SCREEN_W * SCREEN_H * 3) as usize);
-    // 180° rotation: iterate bytes in reverse, lo nibble before hi within each byte.
+    // The packed buffer runs from the last pixel to the first: walk it backwards, low nibble first.
     for &byte in packed.iter().rev() {
         let (r, g, b) = E6_PALETTE[(byte & 0x0F) as usize];
         rgb.push(r); rgb.push(g); rgb.push(b);
@@ -374,7 +384,7 @@ async fn main() {
     let tickers   = load_tickers();
     let nws_cache = Arc::new(NwsPointsCache::new());
     let client    = reqwest::Client::builder()
-        .user_agent("PhotoPainter/1.0 (github.com/photopainter)")
+        .user_agent("PhotoPainter/1.0 (mangocats@gmail.com)")
         .timeout(Duration::from_secs(15))
         .build()
         .expect("failed to build HTTP client");
@@ -400,7 +410,7 @@ async fn main() {
         icon_matrix_mode,
     });
 
-    // Initial render shows the version bar once; render_loop always shows the stock strip
+    // The first render carries the SV/FW bar; every render after it (render_loop) shows the stock strip
     let initial = do_render(&state, true).await;
     *state.image.write().await = initial;
 
@@ -424,14 +434,50 @@ mod preview_tests {
     use crate::image::{E6Canvas, E6Color};
     use crate::modules::Module;
 
-    /// Renders the schedule region from the synthetic fixture to PNGs for eyeballing the layout.
+    /// Renders the schedule region from the synthetic fixture to a PNG for eyeballing the layout.
     #[test]
     fn render_schedule_previews() {
         let html = include_str!("../testdata/mangosched_calendar.html");
         let days = modules::mangosched::parse_calendar(html).unwrap();
         let module = MangoSchedModule::with_days(days);
         let mut canvas = E6Canvas::new(E6Color::White);
-        module.render(&mut canvas, gcal_region());
+        module.render(&mut canvas, schedule_region());
         std::fs::write("/tmp/ms_preview.png", packed_to_png(&canvas.pack())).unwrap();
+    }
+
+    #[test]
+    fn schedule_and_stale_weather_changes_trigger_a_render() {
+        let now = Local::now();
+        let displayed = DisplayedState {
+            refresh_time: now, current_temp_f: 70, high_f: 80, low_f: 60, near_rain: NearTermRain::None,
+            batt_pct: Some(50), batt_charging: Some(false), weather_stale: false, sched_rev: 3,
+        };
+        let same = || Inputs {
+            weather: Some(WeatherData { current_f: 70, high_f: 80, low_f: 60, ..Default::default() }),
+            near_rain: NearTermRain::None, batt_pct: Some(50), batt_charging: Some(false),
+            weather_stale: false, sched_rev: 3,
+        };
+        assert!(!is_significant_change(&displayed, &same(), now), "nothing changed");
+        let mut i = same(); i.sched_rev = 4;
+        assert!(is_significant_change(&displayed, &i, now), "a schedule change must re-render");
+        let mut i = same(); i.weather_stale = true;
+        assert!(is_significant_change(&displayed, &i, now), "weather going stale must re-render");
+    }
+
+    /// Renders the weather block fresh and stale (speckled background) for eyeballing.
+    #[test]
+    fn render_weather_stale_previews() {
+        use std::time::Duration;
+        use crate::modules::battery::BatteryInfo;
+        let data = WeatherData { current_f: 76, high_f: 81, low_f: 73, ..Default::default() };
+        let batt = Some(BatteryInfo { pct: 57, mv: 3800, hrs: None, charging: false });
+        for (name, age) in [("fresh", 60u64), ("stale", 31 * 60)] {
+            let w = WeatherModule::with_data(data, Duration::from_secs(age), batt.clone());
+            assert_eq!(w.is_stale(), name == "stale");
+            let mut canvas = E6Canvas::new(E6Color::White);
+            ClockModule.render(&mut canvas, full_screen());
+            w.render(&mut canvas, full_screen());
+            std::fs::write(format!("/tmp/weather_{name}.png"), packed_to_png(&canvas.pack())).unwrap();
+        }
     }
 }

@@ -1,4 +1,5 @@
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use chrono::{DateTime, FixedOffset, Utc};
 use crate::font::{draw_text, measure_text};
 use crate::image::{E6Canvas, E6Color};
@@ -13,6 +14,11 @@ const HL_ROW_GAP:      i32 = 0;
 pub(crate) const ICON_SIZE: i32 = 84;
 const ICON_GAP:        i32 = 8;
 const ICON_BG_R:       i32 = 13;  // rounded-corner radius for icon background
+
+const REFRESH_OK:      Duration = Duration::from_secs(5 * 60);
+const REFRESH_RETRY:   Duration = Duration::from_secs(60);
+/// Weather older than this is drawn on a speckled-black (grey) background.
+const STALE_AFTER:     Duration = Duration::from_secs(30 * 60);
 
 const BATT_FONT_PX:   f32 = 14.0;
 const BATT_TOP_PAD:   i32 = 2;
@@ -41,6 +47,8 @@ pub struct WeatherData {
 
 pub struct WeatherModule {
     data:        Mutex<Option<WeatherData>>,
+    last_ok:     Mutex<Option<Instant>>,
+    next_attempt: Mutex<Option<Instant>>,
     battery:     Mutex<Option<BatteryInfo>>,
     obs_station: Mutex<Option<String>>,   // cached URL for the nearest obs station
     nws_cache:   Arc<NwsPointsCache>,
@@ -51,11 +59,22 @@ impl WeatherModule {
     pub fn new(client: reqwest::Client, nws_cache: Arc<NwsPointsCache>) -> Self {
         Self {
             data:        Mutex::new(None),
+            last_ok:     Mutex::new(None),
+            next_attempt: Mutex::new(None),
             battery:     Mutex::new(None),
             obs_station: Mutex::new(None),
             nws_cache,
             client,
         }
+    }
+
+    #[cfg(test)]
+    pub fn with_data(d: WeatherData, age: Duration, battery: Option<BatteryInfo>) -> Self {
+        let m = Self::new(reqwest::Client::new(), Arc::new(NwsPointsCache::new()));
+        *m.data.lock().unwrap() = Some(d);
+        *m.last_ok.lock().unwrap() = Instant::now().checked_sub(age);
+        *m.battery.lock().unwrap() = battery;
+        m
     }
 
     pub fn peek(&self) -> Option<WeatherData> {
@@ -70,10 +89,27 @@ impl WeatherModule {
         *self.battery.lock().unwrap() = info;
     }
 
+    /// True when we have weather data but it is more than STALE_AFTER old.
+    pub fn is_stale(&self) -> bool {
+        self.last_ok.lock().unwrap().map_or(false, |t| t.elapsed() > STALE_AFTER)
+    }
+
+    /// Refresh from NWS if due: every 5 minutes, or after 1 minute following a failure.
     pub async fn refresh(&self) {
+        if let Some(next) = *self.next_attempt.lock().unwrap() {
+            if Instant::now() < next { return; }
+        }
+        let now = Instant::now();
         match self.fetch().await {
-            Ok(d)  => *self.data.lock().unwrap() = Some(d),
-            Err(e) => tracing::warn!("weather fetch failed: {e}"),
+            Ok(d) => {
+                *self.data.lock().unwrap() = Some(d);
+                *self.last_ok.lock().unwrap() = Some(now);
+                *self.next_attempt.lock().unwrap() = Some(now + REFRESH_OK);
+            }
+            Err(e) => {
+                tracing::warn!("weather fetch failed: {e}");
+                *self.next_attempt.lock().unwrap() = Some(now + REFRESH_RETRY);
+            }
         }
     }
 
@@ -198,7 +234,7 @@ fn parse_condition(icon_url: &str) -> WeatherCondition {
 
 // ── Icon drawing ──────────────────────────────────────────────────────────────
 // All coordinates are relative to the icon top-left (ix, iy).
-// Icon box is ICON_SIZE × ICON_SIZE (64×64).
+// Icon box is ICON_SIZE × ICON_SIZE.
 
 /// Returns the inclusive x range [x0, x1) for row `dy` of a rounded rectangle
 /// of `size × size` with corner radius `r`.
@@ -216,12 +252,14 @@ fn icon_bg_x_range(dy: i32, size: i32, r: i32) -> (i32, i32) {
 
 /// Draws a rounded-rectangle background for the icon area.
 /// Daytime: white base + 25% blue dither.  Nighttime: black base + 25% blue dither.
-fn draw_icon_bg(canvas: &mut E6Canvas, ix: i32, iy: i32, is_night: bool) {
+/// When `stale`, the daytime base is speckled black instead of plain white.
+fn draw_icon_bg(canvas: &mut E6Canvas, ix: i32, iy: i32, is_night: bool, stale: bool) {
     let bg = if is_night { E6Color::Black } else { E6Color::White };
     for dy in 0..ICON_SIZE {
         let (x0, x1) = icon_bg_x_range(dy, ICON_SIZE, ICON_BG_R);
         if x0 >= x1 { continue; }
         canvas.fill_rect(ix + x0, iy + dy, x1 - x0, 1, bg);
+        if stale && !is_night { speckle(canvas, ix + x0, iy + dy, x1 - x0, 1, 1); }
         // 25% blue dither: every even row, every even column
         if dy % 2 == 0 {
             let mut x = if x0 % 2 == 0 { x0 } else { x0 + 1 };
@@ -299,14 +337,14 @@ fn draw_moon_small(canvas: &mut E6Canvas, ix: i32, iy: i32, cutout: E6Color) {
 }
 
 pub(crate) fn draw_condition_icon(canvas: &mut E6Canvas, ix: i32, iy: i32, cond: WeatherCondition) {
-    draw_weather_icon(canvas, ix, iy, cond);
+    draw_weather_icon(canvas, ix, iy, cond, false);
 }
 
-fn draw_weather_icon(canvas: &mut E6Canvas, ix: i32, iy: i32, cond: WeatherCondition) {
+fn draw_weather_icon(canvas: &mut E6Canvas, ix: i32, iy: i32, cond: WeatherCondition, stale: bool) {
     let is_night    = matches!(cond, WeatherCondition::ClearNight | WeatherCondition::PartlyCloudyNight);
     let moon_cutout = if is_night { E6Color::Black } else { E6Color::White };
 
-    draw_icon_bg(canvas, ix, iy, is_night);
+    draw_icon_bg(canvas, ix, iy, is_night, stale);
 
     match cond {
         WeatherCondition::ClearDay          => draw_sun_full(canvas, ix, iy),
@@ -349,6 +387,23 @@ fn draw_weather_icon(canvas: &mut E6Canvas, ix: i32, iy: i32, cond: WeatherCondi
             canvas.fill_rect(ix +  8, iy + 66, 68, 5, E6Color::Black);
         }
         WeatherCondition::Unknown           => {}
+    }
+}
+
+// ── Stale-data background ─────────────────────────────────────────────────────
+
+/// Sprinkle black pixels (one in four, on even rows and columns of the screen) over an area that
+/// has already been filled white, giving a light grey.  Anchored to absolute coordinates so
+/// neighbouring areas line up; `phase` 1 shifts the pattern onto odd pixels (used inside the icon
+/// cell so the speckle alternates with its blue dither instead of colliding with it).
+fn speckle(canvas: &mut E6Canvas, x: i32, y: i32, w: i32, h: i32, phase: i32) {
+    for yy in y..y + h {
+        if (yy + phase) % 2 != 0 { continue; }
+        let mut xx = if (x + phase) % 2 == 0 { x } else { x + 1 };
+        while xx < x + w {
+            canvas.fill_rect(xx, yy, 1, 1, E6Color::Black);
+            xx += 2;
+        }
     }
 }
 
@@ -412,6 +467,7 @@ impl Module for WeatherModule {
         drop(guard);
 
         let battery = self.battery.lock().unwrap().clone();
+        let stale   = self.is_stale();
 
         let cur_str  = format!("{}", d.current_f);
         let high_str = format!("{}", d.high_f);
@@ -449,21 +505,28 @@ impl Module for WeatherModule {
         let icon_y = top_y + (block_h - ICON_SIZE) / 2 + 10;
 
         // Clear the icon + temperature number area to white before drawing.
-        // draw_icon_bg handles the 64×64 icon cell; this erase also covers the
+        // draw_icon_bg handles the icon cell; this erase also covers the
         // wider temperature text area and the optional battery zone above it.
         let erase_x      = icon_x.max(region.x);
         let erase_top    = if battery.is_some() { region.y } else { top_y };
         let erase_bottom = (top_y + block_h).max(hl_y + hl_total);
         let erase_w      = (region.x + region.width) - erase_x;
         canvas.fill_rect(erase_x, erase_top, erase_w, erase_bottom - erase_top, E6Color::White);
+        if stale { speckle(canvas, erase_x, erase_top, erase_w, erase_bottom - erase_top, 0); }
 
-        draw_weather_icon(canvas, icon_x, icon_y, d.condition);
+        draw_weather_icon(canvas, icon_x, icon_y, d.condition, stale);
 
         draw_text(canvas, cur_x,     cur_y,                      &cur_str,  CURRENT_SIZE_PX, E6Color::Green, true);
         draw_text(canvas, hl_x_high, hl_y,                       &high_str, HL_SIZE_PX,      E6Color::Green, false);
         draw_text(canvas, hl_x_low,  hl_y + hl_a + HL_ROW_GAP,  &low_str,  HL_SIZE_PX,      E6Color::Green, false);
 
         if let Some(ref batt) = battery {
+            if stale {
+                // keep the battery readout on plain white so its black text stays legible
+                let pct_w = measure_text(&format!("{}%", batt.pct), BATT_FONT_PX, false).0;
+                let box_w = pct_w + BATT_ICON_SEP + BATT_ICON_W + 6;
+                canvas.fill_rect(hl_right - box_w + 3, region.y, box_w, BATT_TOP_PAD + batt_ascent + 2, E6Color::White);
+            }
             draw_battery(canvas, batt, hl_right, region.y + BATT_TOP_PAD, batt_ascent);
         }
     }

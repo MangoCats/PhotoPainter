@@ -34,11 +34,14 @@ PhotoPainter/
 │       ├── renderer.rs        # Compose modules onto canvas, pack to 4bpp, SHA-256 ETag
 │       ├── image.rs           # E6Canvas (800×480, 6-color palette), fill_rect, pack
 │       ├── font.rs            # fontdue TTF rasterizer (JetBrains Mono)
+│       ├── nws_cache.rs       # Shared cache of the NWS /points URLs
 │       ├── location.rs        # LAT/LON constants (git-ignored)
 │       ├── stock_creds.rs     # Finnhub API key (git-ignored)
 │       └── modules/
 │           ├── mod.rs         # Module trait
+│           ├── battery.rs     # X-Battery header parsing
 │           ├── clock.rs       # Date/time line, top of screen
+│           ├── icon_matrix.rs # Development/demo icon grid (ICON_MATRIX=1)
 │           ├── weather.rs     # NWS temperature + H/L + 84px weather icons
 │           ├── rain.rs        # NWS QPF rain forecast text
 │           ├── mangosched.rs  # mangoSched schedule: one column per day of colored shift boxes
@@ -112,7 +115,8 @@ Listens on `0.0.0.0:7654` (device API) and `0.0.0.0:17654` (unauthenticated brow
 
 | Variable | Effect |
 |---|---|
-| `ICON_MATRIX=1` | Replace calendar with a full-screen icon grid (development/demo mode) |
+| `ICON_MATRIX=1` | Replace the schedule with an icon grid (development/demo mode) |
+| `MANGOSCHED_BASE_URL` | Point the schedule module at a development mangoSched instance (e.g. `http://host:8099`) instead of production; honoured in every build |
 
 #### Schedule (mangoSched) login
 
@@ -128,8 +132,9 @@ Create `server/mangosched_auth.json` (git-ignored, mode 0600) once:
 
 There is nothing to renew: mangoSched has no password expiry, and its 30-day *login session* is re-established
 automatically with the stored password. If the password is changed or reset in mangoSched, edit that file; until
-then the display shows "(schedule login failed)" and the server retries only every 30 minutes, so the account can
-never be locked out by this server.
+then the display shows "(schedule login failed)". After a rejected login the server stops trying for 30 minutes (saved in
+the git-ignored `server/mangosched_backoff.json`, so restarts cannot retry either), and editing the password file lifts
+that within a minute. The account can never be locked out by this server.
 
 To run it automatically on boot and restart it if it ever dies, install the systemd unit
 shipped in `server/photopainter.service`:

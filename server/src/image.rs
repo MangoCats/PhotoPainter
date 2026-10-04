@@ -50,9 +50,8 @@ impl E6Canvas {
         }
     }
 
-    /// Pack to 4bpp: high nibble = left pixel, low nibble = right pixel.
-    /// Pixels are emitted in reverse order (180° rotation) to match physical
-    /// display orientation.  Output length: SCREEN_W * SCREEN_H / 2 = 192,000 bytes.
+    /// Pack to 4bpp, two pixels per byte, emitting the canvas from its last pixel back to its first
+    /// (the order the panel expects).  Output length: SCREEN_W * SCREEN_H / 2 = 192,000 bytes.
     pub fn pack(&self) -> Vec<u8> {
         let n = self.width * self.height;
         let mut out = vec![0u8; n / 2];

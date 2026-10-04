@@ -10,11 +10,15 @@
 //!   * the session cookie is kept in memory and reused; mangoSched sessions last 30 days,
 //!     after which the next fetch simply logs in again with the stored password;
 //!   * after a rejected login the module stops trying for 30 minutes, so a changed or
-//!     reset password can never trip mangoSched's account lockout.
+//!     reset password can never trip mangoSched's account lockout.  The back-off is saved to
+//!     disk (keyed to the password), so restarting or crash-looping the server cannot retry
+//!     either; editing the password file lifts it within a minute.
 
 use std::net::SocketAddr;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use sha2::{Digest, Sha256};
 
 use reqwest::redirect::Policy;
 use scraper::{ElementRef, Html, Selector};
@@ -29,6 +33,7 @@ use super::rain;
 const PUBLIC_HOST: &str = "bluekoda.duckdns.org";   // also the TLS identity
 const LAN_HOST:    &str = "smartboardpc.lan";        // preferred route: same machine, no internet hop
 const AUTH_FILE:   &str = "mangosched_auth.json";    // {"username": "...", "password": "..."}
+const BACKOFF_FILE: &str = "mangosched_backoff.json"; // {"until": <epoch secs>, "fingerprint": "<hash of the login>"}
 
 const FETCH_OK_INTERVAL:    Duration = Duration::from_secs(10 * 60);
 const FETCH_RETRY_INTERVAL: Duration = Duration::from_secs(2 * 60);
@@ -87,6 +92,7 @@ enum FetchError {
 
 struct State {
     days:         Vec<Day>,
+    revision:     u64,          // bumped whenever a refresh changes what is displayed
     last_ok:      Option<Instant>,
     next_attempt: Option<Instant>,
     status:       Status,
@@ -213,6 +219,36 @@ fn load_creds() -> Result<Creds, FetchError> {
         _ => Err(FetchError::NotConfigured(format!("{AUTH_FILE} needs username and password"))),
     }
 }
+
+fn fingerprint(c: &Creds) -> String {
+    hex::encode(Sha256::digest(format!("{}\0{}", c.username, c.password)))
+}
+
+fn epoch_secs() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+/// How much longer logins are suspended after a rejection, if the saved back-off is still in
+/// force for *these* credentials.  Changing the password changes the fingerprint, which lifts it.
+fn persisted_backoff(path: &str, c: &Creds) -> Option<Duration> {
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    if v["fingerprint"].as_str()? != fingerprint(c) { return None; }
+    let until = v["until"].as_u64()?;
+    let now = epoch_secs();
+    (until > now).then(|| Duration::from_secs(until - now))
+}
+
+fn persist_backoff(path: &str, c: &Creds) {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let body = serde_json::json!({ "until": epoch_secs() + AUTH_BACKOFF.as_secs(), "fingerprint": fingerprint(c) });
+    let written = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600)
+        .open(path)
+        .and_then(|mut f| f.write_all(body.to_string().as_bytes()));
+    if let Err(e) = written { tracing::warn!("could not save login back-off to {path}: {e}"); }
+}
+
+fn clear_backoff(path: &str) { let _ = std::fs::remove_file(path); }
 
 async fn new_session(prefer_lan: bool) -> Session {
     let mut builder = reqwest::Client::builder()
@@ -406,7 +442,7 @@ fn colors(ink: Ink) -> (E6Color, E6Color) {   // (background, text)
 impl MangoSchedModule {
     pub fn new() -> Self {
         Self {
-            state:   Mutex::new(State { days: Vec::new(), last_ok: None, next_attempt: None, status: Status::Pending }),
+            state:   Mutex::new(State { days: Vec::new(), revision: 0, last_ok: None, next_attempt: None, status: Status::Pending }),
             session: Mutex::new(None),
         }
     }
@@ -417,23 +453,29 @@ impl MangoSchedModule {
         {
             let mut st = m.state.lock().unwrap();
             st.days = days;
+            st.revision = 1;
             st.last_ok = Some(Instant::now());
             st.status = Status::Ok;
         }
         m
     }
 
+    #[cfg(test)]
     async fn fetch(&self) -> Result<Vec<Day>, FetchError> {
         let creds = load_creds()?;
+        self.fetch_with(&creds).await
+    }
+
+    async fn fetch_with(&self, creds: &Creds) -> Result<Vec<Day>, FetchError> {
         let cached = self.session.lock().unwrap().clone();
         let sess = match cached { Some(s) => s, None => new_session(true).await };
-        let mut result = fetch_with(&sess, &creds).await;
+        let mut result = fetch_with(&sess, creds).await;
         let mut used = sess.clone();
         // The LAN route failing at the network level is not proof the service is down: retry
         // once through the public name before giving up.
         if sess.lan && matches!(result, Err(FetchError::Network(_))) {
             let public = new_session(false).await;
-            result = fetch_with(&public, &creds).await;
+            result = fetch_with(&public, creds).await;
             used = public;
         }
         if !matches!(result, Err(FetchError::Network(_))) { *self.session.lock().unwrap() = Some(used); }
@@ -441,33 +483,60 @@ impl MangoSchedModule {
         result
     }
 
+    /// Bumped every time a refresh changes what the schedule shows (including the day labels
+    /// rolling over at midnight), so the server knows to re-render.
+    pub fn revision(&self) -> u64 { self.state.lock().unwrap().revision }
+
     /// Refresh the schedule if due.  Cheap to call every minute; it throttles itself.
     pub async fn refresh(&self) {
         if let Some(next) = self.state.lock().unwrap().next_attempt {
             if Instant::now() < next { return; }
         }
-        let result = self.fetch().await;
-        let now = Instant::now();
-        let mut st = self.state.lock().unwrap();
-        match result {
+        let creds = match load_creds() {
+            Ok(c) => c,
+            Err(e) => { self.record_failure(e, None); return; }
+        };
+        // A rejected login is remembered on disk, so restarts cannot retry it.  Re-checked each
+        // minute, which is how an edited password file takes effect without a restart.
+        if let Some(wait) = persisted_backoff(BACKOFF_FILE, &creds) {
+            let mut st = self.state.lock().unwrap();
+            if !matches!(st.status, Status::AuthFailed) { tracing::warn!("schedule login suspended for {} more minutes after an earlier rejection", wait.as_secs() / 60 + 1); }
+            st.status = Status::AuthFailed;
+            st.next_attempt = Some(Instant::now() + Duration::from_secs(60));
+            return;
+        }
+        match self.fetch_with(&creds).await {
             Ok(days) => {
+                clear_backoff(BACKOFF_FILE);
+                let now = Instant::now();
                 tracing::info!(days = days.len(), shifts = days.iter().map(|d| d.shifts.len()).sum::<usize>(), "schedule refreshed");
+                let mut st = self.state.lock().unwrap();
+                if st.days != days { st.revision += 1; }
                 st.days = days;
                 st.last_ok = Some(now);
                 st.status = Status::Ok;
                 st.next_attempt = Some(now + FETCH_OK_INTERVAL);
             }
-            Err(FetchError::NotConfigured(m)) => {
+            Err(e) => self.record_failure(e, Some(&creds)),
+        }
+    }
+
+    fn record_failure(&self, e: FetchError, creds: Option<&Creds>) {
+        let now = Instant::now();
+        let mut st = self.state.lock().unwrap();
+        match e {
+            FetchError::NotConfigured(m) => {
                 tracing::warn!("schedule not configured: {m}");
                 st.status = Status::NotConfigured;
                 st.next_attempt = Some(now + AUTH_BACKOFF);
             }
-            Err(FetchError::Auth(m)) => {
+            FetchError::Auth(m) => {
                 tracing::warn!("schedule login failed: {m}; not retrying for 30 minutes");
+                if let Some(c) = creds { persist_backoff(BACKOFF_FILE, c); }
                 st.status = Status::AuthFailed;
-                st.next_attempt = Some(now + AUTH_BACKOFF);
+                st.next_attempt = Some(now + Duration::from_secs(60));
             }
-            Err(FetchError::Network(m)) | Err(FetchError::Layout(m)) => {
+            FetchError::Network(m) | FetchError::Layout(m) => {
                 tracing::warn!("schedule fetch failed: {m}");
                 st.status = Status::Offline;
                 st.next_attempt = Some(now + FETCH_RETRY_INTERVAL);
@@ -490,7 +559,7 @@ impl Module for MangoSchedModule {
             (st.days.clone(), banner)
         };
 
-        let mut top = region.y + rain::GCAL_Y_START;
+        let mut top = region.y + rain::SCHEDULE_Y_START;
         if let Some(text) = banner {
             canvas.fill_rect(region.x, top, region.width, BANNER_H, E6Color::Red);
             draw_text(canvas, region.x + 8, top + 1, text, BANNER_PX, E6Color::White, false);
@@ -584,6 +653,22 @@ mod tests {
     }
 
     #[test]
+    fn login_backoff_is_remembered_and_lifted_by_a_password_change() {
+        let path = std::env::temp_dir().join("photopainter_backoff_unit_test.json");
+        let path = path.to_str().unwrap();
+        let c1 = Creds { username: "u".into(), password: "one".into() };
+        let c2 = Creds { username: "u".into(), password: "two".into() };
+        clear_backoff(path);
+        assert!(persisted_backoff(path, &c1).is_none());
+        persist_backoff(path, &c1);
+        let wait = persisted_backoff(path, &c1).expect("back-off in force after a rejection");
+        assert!(wait.as_secs() > 29 * 60 && wait.as_secs() <= 30 * 60);
+        assert!(persisted_backoff(path, &c2).is_none(), "editing the password lifts the back-off");
+        clear_backoff(path);
+        assert!(persisted_backoff(path, &c1).is_none());
+    }
+
+    #[test]
     fn rejects_non_calendar_pages() {
         assert!(parse_calendar("<html><body>please log in</body></html>").is_err());
     }
@@ -663,7 +748,7 @@ mod tests {
         assert!(days[0].offset == 0);
         let module = MangoSchedModule::with_days(days.clone());
         let mut canvas = E6Canvas::new(E6Color::White);
-        module.render(&mut canvas, crate::renderer::gcal_region());
+        module.render(&mut canvas, crate::renderer::schedule_region());
         std::fs::write("/tmp/ms_live_preview.png", crate::packed_to_png(&canvas.pack())).unwrap();
         // second fetch reuses the cached session (no new login): must still work
         assert!(m.fetch().await.is_ok());
@@ -687,6 +772,11 @@ mod tests {
         let kind = match &m.state.lock().unwrap().status { Status::AuthFailed => "AuthFailed", Status::Offline => "Offline", Status::NotConfigured => "NotConfigured", Status::Pending => "Pending", Status::Ok => "Ok" };
         assert_eq!(kind, "AuthFailed", "unexpected status after a wrong password");
         for _ in 0..5 { m.refresh().await; }          // inside the back-off window: no further attempts
-        println!("wrong password: 1 attempt, then backed off (check failed_login_attempts == 1)");
+        // a restarted server (fresh module, same credentials) must not try again either
+        let restarted = MangoSchedModule::new();
+        restarted.refresh().await;
+        assert!(matches!(restarted.state.lock().unwrap().status, Status::AuthFailed));
+        let _ = std::fs::remove_dir_all(&dir);
+        println!("wrong password: one login attempt, then backed off, also across a restart");
     }
 }

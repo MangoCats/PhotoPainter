@@ -1,4 +1,5 @@
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use chrono::{Utc, Local, Timelike};
 use crate::font::{draw_text, measure_text};
 use crate::image::{E6Canvas, E6Color};
@@ -9,10 +10,12 @@ use super::clock;
 const SIZE_PX:  f32 = 28.0;
 const MARGIN:   i32 = 8;
 const LINE_GAP: i32 = 4;
+const REFRESH_OK:    Duration = Duration::from_secs(5 * 60);
+const REFRESH_RETRY: Duration = Duration::from_secs(60);
 
 // Worst-case pixel bottom of the rain block: clock_margin(4) + clock_ascent(≈19) +
 // line_gap(4) + 4 rain lines × (rain_ascent≈21 + line_gap 4) = 27 + 100 = 127, rounded up.
-pub(crate) const GCAL_Y_START: i32 = 128;
+pub(crate) const SCHEDULE_Y_START: i32 = 128;
 // Maximum pixel width for rain text — keeps it left of the temperature block.
 // Weather temp display starts at ~x=489 for 3-digit temperatures (worst case).
 const RAIN_MAX_W:      i32 = 500;
@@ -37,13 +40,14 @@ pub struct RainData {
 
 pub struct RainModule {
     data:      Mutex<Option<RainData>>,
+    next_attempt: Mutex<Option<Instant>>,
     nws_cache: Arc<NwsPointsCache>,
     client:    reqwest::Client,
 }
 
 impl RainModule {
     pub fn new(client: reqwest::Client, nws_cache: Arc<NwsPointsCache>) -> Self {
-        Self { data: Mutex::new(None), nws_cache, client }
+        Self { data: Mutex::new(None), next_attempt: Mutex::new(None), nws_cache, client }
     }
 
     pub fn peek_near(&self) -> NearTermRain {
@@ -53,10 +57,21 @@ impl RainModule {
             .unwrap_or(NearTermRain::None)
     }
 
+    /// Refresh from NWS if due: every 5 minutes, or after 1 minute following a failure.
     pub async fn refresh(&self) {
+        if let Some(next) = *self.next_attempt.lock().unwrap() {
+            if Instant::now() < next { return; }
+        }
+        let now = Instant::now();
         match self.fetch().await {
-            Ok(d)  => *self.data.lock().unwrap() = Some(d),
-            Err(e) => tracing::warn!("rain fetch failed: {e}"),
+            Ok(d) => {
+                *self.data.lock().unwrap() = Some(d);
+                *self.next_attempt.lock().unwrap() = Some(now + REFRESH_OK);
+            }
+            Err(e) => {
+                tracing::warn!("rain fetch failed: {e}");
+                *self.next_attempt.lock().unwrap() = Some(now + REFRESH_RETRY);
+            }
         }
     }
 

@@ -30,13 +30,6 @@ impl NwsPointsCache {
         Self { inner: Mutex::new(None) }
     }
 
-    /// Drop the cached URLs so the next call re-fetches from NWS.
-    /// Call this when a downstream request returns 404 (grid cell reassigned).
-    #[allow(dead_code)]
-    pub fn invalidate(&self) {
-        *self.inner.lock().unwrap() = None;
-    }
-
     pub async fn get(
         &self,
         client: &reqwest::Client,

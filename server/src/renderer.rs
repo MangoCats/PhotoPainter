@@ -45,8 +45,8 @@ pub fn full_screen() -> Rect {
     Rect { x: 0, y: 0, width: SCREEN_W, height: SCREEN_H }
 }
 
-/// GCal region: full width, but height excludes the stock strip at the bottom.
-/// GCalModule derives its max_y from region.height so it never draws over the strip.
-pub fn gcal_region() -> Rect {
+/// Schedule region: full width, from the top down to the stock strip.  The schedule module draws
+/// from `SCHEDULE_Y_START` and stops two pixels above the bottom of this region.
+pub fn schedule_region() -> Rect {
     Rect { x: 0, y: 0, width: SCREEN_W, height: SCREEN_H - STRIP_H }
 }

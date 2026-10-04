@@ -10,3 +10,4 @@ server/src/stock_creds.rs
 # mangoSched viewer-account login (runtime secret)
 server/mangosched_auth.json
 server/mangosched_auth.json.new
+server/mangosched_backoff.json

@@ -54,6 +54,7 @@ With `ARDUINO_USB_CDC_ON_BOOT=1` in firmware, PlatformIO can auto-reset into boo
 
 ```ini
 [env:photopainter]
+extra_scripts = extra_scripts.py
 platform = espressif32
 board = esp32-s3-devkitc-1
 framework = arduino
@@ -62,8 +63,9 @@ board_build.flash_size = 16MB
 board_build.partitions = huge_app.csv
 board_build.arduino.memory_type = qio_opi
 
+build_unflags = -DARDUINO_USB_MODE
 build_flags =
-    -DARDUINO_USB_MODE=1
+    -DARDUINO_USB_MODE=0
     -DARDUINO_USB_CDC_ON_BOOT=1
     -DXPOWERS_CHIP_AXP2101
 
@@ -279,7 +281,7 @@ When returning a `Vec<u8>` body from an axum handler, axum (via hyper) sets `Con
 
 ## Pixel Data Format
 
-4 bits per pixel, 2 pixels per byte. High nibble = left pixel, low nibble = right pixel.
+4 bits per pixel, 2 pixels per byte. High nibble = the first pixel of the pair in stream order, low nibble = the second.
 
 ```cpp
 uint8_t pixel_byte = (color << 4) | color;  // solid fill
