@@ -1,5 +1,4 @@
 mod font;
-mod gcal_creds;
 mod image;
 mod location;
 mod modules;
@@ -25,8 +24,8 @@ use chrono::{Datelike, DateTime, Local, Timelike, Weekday};
 use nws_cache::NwsPointsCache;
 use modules::battery::parse_battery_header;
 use modules::clock::ClockModule;
-use modules::gcal::GCalModule;
 use modules::icon_matrix::IconMatrixModule;
+use modules::mangosched::MangoSchedModule;
 use modules::rain::{RainModule, NearTermRain};
 use modules::stock::StockModule;
 use modules::weather::{WeatherModule, WeatherData};
@@ -78,7 +77,7 @@ struct AppState {
     fw_version:        RwLock<String>,
     weather:           WeatherModule,
     rain:              RainModule,
-    gcal:              GCalModule,
+    sched:             MangoSchedModule,
     stock:             StockModule,
     displayed:         RwLock<Option<DisplayedState>>,
     icon_matrix_mode:  bool,
@@ -131,7 +130,7 @@ async fn do_render(state: &AppState, show_version: bool) -> RenderedImage {
         (&clock,         full_screen()),
         (&state.rain,    full_screen()),
         (&state.weather, full_screen()),
-        (&state.gcal,    if weekend { weekend_gcal_region() } else { gcal_region() }),
+        (&state.sched,   if weekend { weekend_gcal_region() } else { gcal_region() }),
     ];
     render(modules, SERVER_VERSION, &fw_ver, show_version, &state.stock, weekend)
 }
@@ -159,7 +158,7 @@ async fn render_loop(state: SharedState) {
         let now       = Local::now();
         let weekend   = matches!(now.weekday(), Weekday::Sat | Weekday::Sun);
 
-        tokio::join!(state.weather.refresh(), state.rain.refresh(), state.gcal.refresh());
+        tokio::join!(state.weather.refresh(), state.rain.refresh(), state.sched.refresh());
         let weather   = state.weather.peek();
         let near_rain = state.rain.peek_near();
         let battery   = state.weather.peek_battery();
@@ -385,12 +384,12 @@ async fn main() {
 
     let weather = WeatherModule::new(client.clone(), Arc::clone(&nws_cache));
     let rain    = RainModule::new(client.clone(), Arc::clone(&nws_cache));
-    let gcal    = GCalModule::new(client.clone());
+    let sched   = MangoSchedModule::new();
     let stock   = StockModule::new(tickers, client);
 
     let icon_matrix_mode = std::env::var("ICON_MATRIX").is_ok();
     if icon_matrix_mode {
-        tracing::info!("ICON_MATRIX mode: gcal replaced with icon grid");
+        tracing::info!("ICON_MATRIX mode: schedule replaced with icon grid");
     }
 
     let state: SharedState = Arc::new(AppState {
@@ -398,7 +397,7 @@ async fn main() {
         fw_version: RwLock::new("unknown".to_string()),
         weather,
         rain,
-        gcal,
+        sched,
         stock,
         displayed:  RwLock::new(None),
         icon_matrix_mode,
@@ -420,4 +419,24 @@ async fn main() {
     tracing::info!("listening on {addr} (server version: {SERVER_VERSION})");
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::*;
+    use crate::image::{E6Canvas, E6Color};
+    use crate::modules::Module;
+
+    /// Renders the schedule region from the synthetic fixture to PNGs for eyeballing the layout.
+    #[test]
+    fn render_schedule_previews() {
+        let html = include_str!("../testdata/mangosched_calendar.html");
+        let days = modules::mangosched::parse_calendar(html).unwrap();
+        for (name, region) in [("weekday", gcal_region()), ("weekend", weekend_gcal_region())] {
+            let module = MangoSchedModule::with_days(days.clone());
+            let mut canvas = E6Canvas::new(E6Color::White);
+            module.render(&mut canvas, region);
+            std::fs::write(format!("/tmp/ms_preview_{name}.png"), packed_to_png(&canvas.pack())).unwrap();
+        }
+    }
 }

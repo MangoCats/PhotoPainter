@@ -16,7 +16,7 @@ Two independent projects share this repository:
 PhotoPainter/
 ├── DESIGN.md                   ← this document
 ├── LESSONS_LEARNED.md          ← hardware bring-up findings
-├── .gitignore                  ← excludes location.rs, gcal_creds.rs, stock_creds.rs
+├── .gitignore                  ← excludes location.rs, stock_creds.rs, mangosched_auth.json
 ├── scratch/                    ← bring-up and test sketches
 ├── firmware/
 │   ├── platformio.ini
@@ -34,14 +34,13 @@ PhotoPainter/
         ├── image.rs            ← E6Canvas pixel buffer and palette
         ├── font.rs             ← fontdue TTF rasterization (JetBrains Mono)
         ├── location.rs         ← LAT/LON constants (gitignored, not in repo)
-        ├── gcal_creds.rs       ← Google Calendar OAuth credentials (gitignored)
         ├── stock_creds.rs      ← Finnhub API key (gitignored)
         └── modules/
             ├── mod.rs          ← Module trait definition
             ├── clock.rs        ← date and time display
             ├── weather.rs      ← NWS current temperature + H/L forecast + 84px weather icons
             ├── rain.rs         ← NWS QPF rain forecast
-            ├── gcal.rs         ← Google Calendar: today + tomorrow + day-after-tomorrow
+            ├── mangosched.rs   ← mangoSched schedule: one column per day of colored shift boxes
             └── stock.rs        ← Finnhub stock quotes
 ```
 
@@ -302,7 +301,7 @@ The server does **not** re-render on every poll. Instead, a background task (`re
 
 ```
 render_loop (every 60 s):
-  tokio::join!(weather, rain, gcal).refresh()
+  tokio::join!(weather, rain, sched).refresh()
 
   if significant_change:
     if not weekend:
@@ -327,7 +326,7 @@ pub trait Module: Send + Sync {
 }
 ```
 
-Modules receive a `Rect` region from the renderer. Most modules receive `full_screen()` and self-manage their coordinates internally. The GCal module uses `region.y` as a vertical offset and `region.height` to determine how many lines fit.
+Modules receive a `Rect` region from the renderer. Most modules receive `full_screen()` and self-manage their coordinates internally. The schedule module uses `region.y` as a vertical offset and `region.height` as its bottom edge.
 
 ### Image Pipeline
 
@@ -381,13 +380,13 @@ y=4   │  24px black, left-margin=4                          Current: 96px    �
       │ [Rain] 0.04 in/hr rain to start in 3.5 hours.       justified        │
 y≈26  │  28px blue, left-justified, max 500px wide           H/L: 43px green │
       │                                            [84px weather icon, R-just]│
-y=128 ├── Google Calendar ────────────────────────────────────────────────────┤
-      │  8:30 AM  Dentist appointment        ← past/all-day: white on black   │
-      │  All day  School holiday             ← next upcoming: yellow on blue  │
-      │  2:00 PM  Team standup               ← further upcoming: white on blue│
-      │  [tomorrow's events]                 ← black on green                 │
-      │  [day-after events]                  ← black on yellow                │
-      │  ...up to ~13 lines...                                                │
+y=128 ├── Schedule (mangoSched) — one column per day ─────────────────────────┤
+      │ ┏Sun Oct 4┓ Mon Oct 5   Mon Oct 5 ›  Tue Oct 6   Wed Oct 7           │
+      │ 7a-9:30a Ivan  7a-9:30a Eli  6:30p-9p Jo   7a-9:30a Fran  no shifts   │
+      │ Dustin Music   Dustin Comp.  Conrad Comp.  Conrad Pers.              │
+      │ box color = worker's color (nearest of blue/red/green/yellow);        │
+      │ open shift = white box with black outline                             │
+      │ ...a day continues in the next column when its boxes do not fit...    │
 y=430 ├───────────────────────────────────────────────────────────────────────┤
       │  2px gap                                                              │
 y=432 ├── Stock Strip (48px) ─────────────────────────────────────────────────┤
@@ -395,10 +394,6 @@ y=432 ├── Stock Strip (48px) ───────────────
       │  green=up/flat, red=down vs open; white text; 5px white dividers      │
 y=480 └───────────────────────────────────────────────────────────────────────┘
 ```
-
-### After 6:00 PM (all modes)
-
-Today's calendar events starting before 12:01 PM are hidden to reduce clutter, showing only afternoon and evening events plus tomorrow's and the day-after's events.
 
 **Bottom strip switching:** On the very first render after server startup, the bottom area shows the version bar (`SV: <git-version>   FW: <fw-version>`, right-justified, 19.2px) instead of the stock strip. All subsequent renders show the stock strip (weekdays only).
 
@@ -441,23 +436,31 @@ Today's calendar events starting before 12:01 PM are hidden to reduce clutter, s
 - **Duration formatting:** < 60 min → integer minutes; < 48 hr → N.N hours; ≥ 48 hr → N days
 - **Significant-change tracking:** changes in the ≤ 6-hour window (Active / Imminent / None) trigger a screen refresh
 
-### Google Calendar (`gcal.rs`)
+### Schedule (`mangosched.rs`)
 
-- **Data source:** Google Calendar API v3, OAuth 2.0 refresh token flow
-- **Credentials:** `gcal_creds.rs` (gitignored) — CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN, CALENDAR_IDS
-- **Calendars:** multiple calendar IDs merged; exact-duplicate events (same summary + time) deduplicated
-- **Scope:** today, tomorrow, and day-after-tomorrow (three separate API fetches per refresh)
-- **Refresh:** every 5 minutes; access token cached with 60-second expiry margin
-- **Font:** 28px JetBrains Mono Regular
-- **Position:** y=128 downward; bottom boundary extends one line-height past region.height to use all available space
-- **Color coding:**
-  - Today — all-day events and past timed events: white text, black background
-  - Today — next upcoming timed event: yellow text, blue background
-  - Today — further upcoming timed events: white text, blue background
-  - Tomorrow's events: black text, green background
-  - Day-after-tomorrow's events: black text, yellow background
-- **After 6:00 PM filter:** today's events starting before 12:01 PM are hidden
-- **Sort order:** all-day events first (sort_key = -1), then chronological by start time
+- **Data source:** the mangoSched web app ("kodaCal" instance, `https://bluekoda.duckdns.org`). It has no API, so the
+  module logs in as a read-only **viewer** account and parses the calendar page's `table.calendar-grid`
+  (`div.daynum a` carries each day's offset from today; `div.shift` carries color class, time, type and worker).
+  The page shows exactly what that role may see (cancelled shifts and "X"-state open shifts are not shown to a viewer).
+- **Route:** connects to `smartboardpc.lan` (LAN) while keeping the public name for TLS and the virtual host; if the LAN
+  route fails at the network level it retries once via the public name.
+- **Authentication (no upkeep):** credentials are read at runtime from `server/mangosched_auth.json` (git-ignored, 0600).
+  The session cookie is kept in memory and reused; mangoSched sessions last 30 days (FR-1a), after which the next fetch
+  logs in again. A rejected login (wrong/reset password, locked account, forced password change) stops all attempts for
+  30 minutes, so mangoSched's account lockout can never be triggered by this server. Login needs the CSRF token from the
+  login form and, over HTTPS, `Origin`/`Referer` headers.
+- **Refresh:** every 10 minutes (2 minutes after a network failure). Stale after 1 hour: a red banner reads
+  `(schedule offline)`; auth problems read `(schedule login failed)` / `(schedule not configured)`.
+- **Scope:** today and every later day on the page. Past days are dropped; empty days are kept (label + "no shifts").
+- **Layout:** 5 columns, 3 px apart. Each day starts in a new column: a header (black bar, white text; today is a white bar
+  with a black frame and bold text), then one box per shift. If the next box does not fit, the day continues in the next
+  column with the header repeated and ` ›` appended. Days are placed until there is no room for another column.
+- **Box:** 14 px text. Line 1: compact time and worker short name (`9:30a-12p Jo`; overnight `10p→6a`); then the shift type,
+  word-wrapped to two lines. Open shifts show `OPEN`.
+- **Colors:** the worker's calendar color mapped to the nearest ink: blue, cyan, purple, lavender → blue (white text);
+  red, pink, orange, brown → red (white text); yellow → yellow (black text); lime-green, dark-green → green (black text).
+  Open shifts: white box, black outline. The worker's name distinguishes workers who share an ink.
+- **Position:** y=128 downward, full width; the bottom is the region bottom (stock strip excluded on weekdays).
 
 ### Stock Quotes (`stock.rs`)
 
@@ -480,10 +483,10 @@ Today's calendar events starting before 12:01 PM are hidden to reduce clutter, s
 | File | Contents |
 |------|----------|
 | `server/src/location.rs` | `LAT` and `LON` constants for NWS API lookups |
-| `server/src/gcal_creds.rs` | Google Calendar CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN, CALENDAR_IDS |
 | `server/src/stock_creds.rs` | Finnhub API_KEY |
+| `server/mangosched_auth.json` | mangoSched viewer-account username and password (read at runtime, mode 0600) |
 
-The `.rs` credential files must be created manually on each deployment — they are compiled directly into the server binary as Rust constants. See `GOOGLE_CREDENTIALS.md` for setup instructions.
+The `.rs` credential files must be created manually on each deployment — they are compiled directly into the server binary as Rust constants. `mangosched_auth.json` is the exception: it is plain runtime data, not compiled in.
 
 ---
 
@@ -505,7 +508,8 @@ The `.rs` credential files must be created manually on each deployment — they 
 | 12 | Bank data source | *Abandoned (2026-10).* Was Teller.io; the bank module was removed — see git history |
 | 13 | Bank mode schedule | *Removed with the bank module.* Weekends: full-height calendar, no stock strip; weekdays: calendar + stock strip |
 | 14 | Poll interval | Three-zone: 3600 s overnight, countdown to 6:45 AM, 300 s daytime |
-| 15 | Calendar scope | Today + tomorrow + day-after; after 6 PM hides today's morning events |
+| 15 | Calendar scope | mangoSched schedule: today + every later day on its calendar page, one column per day (overflow continues in the next column) |
+| 17 | Calendar source | mangoSched viewer-account login (runtime credentials, self-renewing session); replaced Google Calendar 2026-10 |
 | 16 | Bank query rate | *Removed with the bank module* |
 
 ---

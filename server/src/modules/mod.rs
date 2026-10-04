@@ -2,8 +2,8 @@ use crate::image::E6Canvas;
 
 pub mod battery;
 pub mod clock;
-pub mod gcal;
 pub mod icon_matrix;
+pub mod mangosched;
 pub mod rain;
 pub mod stock;
 pub mod weather;

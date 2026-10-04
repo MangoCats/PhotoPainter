@@ -6,3 +6,7 @@ server/src/stock_creds.rs
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+
+# mangoSched viewer-account login (runtime secret)
+server/mangosched_auth.json
+server/mangosched_auth.json.new

@@ -33,14 +33,13 @@ PhotoPainter/
 │       ├── image.rs           # E6Canvas (800×480, 6-color palette), fill_rect, pack
 │       ├── font.rs            # fontdue TTF rasterizer (JetBrains Mono)
 │       ├── location.rs        # LAT/LON constants (git-ignored)
-│       ├── gcal_creds.rs      # Google Calendar OAuth credentials (git-ignored)
 │       ├── stock_creds.rs     # Finnhub API key (git-ignored)
 │       └── modules/
 │           ├── mod.rs         # Module trait
 │           ├── clock.rs       # Date/time line, top of screen
 │           ├── weather.rs     # NWS temperature + H/L + 84px weather icons
 │           ├── rain.rs        # NWS QPF rain forecast text
-│           ├── gcal.rs        # Google Calendar: today + tomorrow + day-after
+│           ├── mangosched.rs  # mangoSched schedule: one column per day of colored shift boxes
 │           └── stock.rs       # Finnhub stock quote strip
 │
 ├── scratch/                   # Hardware bring-up and test sketches (not production)
@@ -49,7 +48,6 @@ PhotoPainter/
 │
 ├── DESIGN.md                  # Architecture decisions and resolved design questions
 ├── LESSONS_LEARNED.md         # Hardware reference: pin map, AXP2101 init, EPD sequence, color table
-├── GOOGLE_CREDENTIALS.md      # Step-by-step: obtaining permanent Google Calendar OAuth credentials
 └── ESP32-S3-PhotoPainter-Fac.bin  # Waveshare factory firmware (for recovery)
 ```
 
@@ -112,6 +110,23 @@ Listens on `0.0.0.0:7654`. Set `RUST_LOG=info` for request logging.
 | Variable | Effect |
 |---|---|
 | `ICON_MATRIX=1` | Replace calendar with a full-screen icon grid (development/demo mode) |
+
+#### Schedule (mangoSched) login
+
+The schedule comes from the mangoSched web app (the "kodaCal" instance on `smartboardpc`, public name
+`bluekoda.duckdns.org`), using a read-only **viewer** account. The server logs in like a browser, reads the
+calendar page, and draws each day as a column of colored shift boxes.
+
+Create `server/mangosched_auth.json` (git-ignored, mode 0600) once:
+
+```json
+{"username": "viewer", "password": "<the account's password>"}
+```
+
+There is nothing to renew: mangoSched has no password expiry, and its 30-day *login session* is re-established
+automatically with the stored password. If the password is changed or reset in mangoSched, edit that file; until
+then the display shows "(schedule login failed)" and the server retries only every 30 minutes, so the account can
+never be locked out by this server.
 
 To run it automatically on boot and restart it if it ever dies, install the systemd unit
 shipped in `server/photopainter.service`:
