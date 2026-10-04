@@ -113,27 +113,18 @@ Listens on `0.0.0.0:7654`. Set `RUST_LOG=info` for request logging.
 |---|---|
 | `ICON_MATRIX=1` | Replace calendar with a full-screen icon grid (development/demo mode) |
 
-To run it automatically on boot, create a systemd unit:
-
-```ini
-# /etc/systemd/system/photopainter.service
-[Unit]
-Description=PhotoPainter dashboard server
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-ExecStart=/home/pi/PhotoPainter/server/target/release/photopainter-server
-Restart=on-failure
-Environment=RUST_LOG=info
-
-[Install]
-WantedBy=multi-user.target
-```
+To run it automatically on boot and restart it if it ever dies, install the systemd unit
+shipped in `server/photopainter.service`:
 
 ```bash
+sudo cp server/photopainter.service /etc/systemd/system/
+sudo systemctl daemon-reload
 sudo systemctl enable --now photopainter
+journalctl -u photopainter -f        # logs (RUST_LOG=info is set in the unit)
 ```
+
+The unit sets `Restart=always` and a high `LimitNOFILE`. Do not also start the server from a
+login script (`~/.profile`) — the two would fight over port 7654.
 
 ## HTTP protocol
 

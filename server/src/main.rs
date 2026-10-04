@@ -284,6 +284,10 @@ fn add_common_headers(headers: &mut HeaderMap, etag: &str, poll_secs: u64) {
     headers.insert("X-Poll-Interval",     HeaderValue::from_str(&poll_secs.to_string()).unwrap());
     headers.insert("X-Server-Time",       HeaderValue::from_str(&chrono::Utc::now().timestamp().to_string()).unwrap());
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    // The display deep-sleeps with its radio off right after a poll and never closes its TCP
+    // connection, so without this each full-image fetch leaves a socket (and file descriptor)
+    // open on the server forever.  Closing from our side after the response frees it.
+    headers.insert(header::CONNECTION,    HeaderValue::from_static("close"));
 }
 
 // ── Browser preview server (port 17654) ──────────────────────────────────────

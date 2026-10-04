@@ -1,0 +1,21 @@
+[Unit]
+Description=PhotoPainter dashboard server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+# stock_tickers.txt is read relative to the working directory
+WorkingDirectory=/home/pi/PhotoPainter/server
+ExecStart=/home/pi/PhotoPainter/server/target/release/photopainter-server
+Environment=RUST_LOG=info
+Restart=always
+RestartSec=5
+# Generous headroom; a leaked connection must never again starve accept() of descriptors
+LimitNOFILE=65536
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
