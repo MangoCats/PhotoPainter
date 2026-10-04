@@ -150,19 +150,6 @@ static void epd_refresh() {
     digitalWrite(EPD_PWR, LOW);      // cut external supply; panel retains image
 }
 
-// ── Solid-colour fill — no buffer required ────────────────────────────────────
-// packed_byte: high nibble = left pixel, low nibble = right pixel
-// e.g. 0x11=white, 0x22=yellow, 0x33=red, 0x55=blue, 0x66=green, 0x00=black
-static void epd_fill(uint8_t packed_byte) {
-    epd_init();
-    epd_cmd(0x10);
-    digitalWrite(EPD_DC, HIGH);
-    digitalWrite(EPD_CS, LOW);
-    for (int i = 0; i < EPD_IMAGE_BYTES; ++i) epd_spi_byte(packed_byte);
-    digitalWrite(EPD_CS, HIGH);
-    epd_refresh();
-}
-
 // ── AXP2101 init ─────────────────────────────────────────────────────────────
 static void pmic_init() {
     if (!pmu.begin(Wire, AXP_ADDR, AXP_SDA, AXP_SCL)) return;
@@ -266,8 +253,9 @@ static bool poll_server(const char* batt_hdr) {
         return false;
     }
 
+    // Keep the new ETag aside: it is only remembered once the image has been fully received and
+    // shown, so a failed transfer is retried at the next poll instead of answered with a 304.
     String etag = http.header("ETag");
-    if (!etag.isEmpty()) etag.toCharArray(s_etag, sizeof(s_etag));
 
     // ── Stream HTTP body directly to EPD ──────────────────────────────────────
     epd_init();
@@ -304,6 +292,7 @@ static bool poll_server(const char* batt_hdr) {
 
     epd_refresh();
 
+    if (!etag.isEmpty()) etag.toCharArray(s_etag, sizeof(s_etag));
     return true;
 }
 
