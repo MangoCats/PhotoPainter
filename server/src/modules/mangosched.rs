@@ -37,11 +37,11 @@ const STALE_AFTER:          Duration = Duration::from_secs(60 * 60);
 
 // ── Layout ────────────────────────────────────────────────────────────────────
 
-const COLS:        i32 = 5;      // columns across the screen
+const COLS:        i32 = 6;      // columns across the screen
 const COL_GAP:     i32 = 3;
 const HEADER_H:    i32 = 24;     // day label bar
 const HEADER_PX:   f32 = 16.0;
-const BOX_PX:      f32 = 14.0;
+const BOX_PX:      f32 = 13.0;
 const BOX_PAD_X:   i32 = 4;
 const BOX_PAD_Y:   i32 = 2;
 const BOX_GAP:     i32 = 2;
@@ -370,15 +370,18 @@ fn wrap(text: &str, max_chars: usize, max_lines: usize) -> Vec<String> {
 fn char_w() -> i32 { measure_text("M", BOX_PX, false).0.max(1) }
 fn line_h() -> i32 { BOX_PX as i32 + 3 }
 
-/// Text lines for one box: time and worker on the first line, then the shift type (wrapped).
+/// Text lines for one box: time and worker (together if they fit, else on two lines), then the
+/// shift type (wrapped).
 fn box_lines(shift: &Shift, inner_w: i32) -> Vec<String> {
     let max_chars = (inner_w / char_w()).max(4) as usize;
-    let first = {
-        let when = fit(&shift.when, max_chars);
-        let room = max_chars.saturating_sub(when.chars().count() + 1);
-        if room >= 2 && !shift.who.is_empty() { format!("{when} {}", fit(&shift.who, room)) } else { when }
+    let when = fit(&shift.when, max_chars);
+    let mut lines = if shift.who.is_empty() {
+        vec![when]
+    } else if when.chars().count() + 1 + shift.who.chars().count() <= max_chars {
+        vec![format!("{when} {}", shift.who)]            // "9a-3p Shay"
+    } else {
+        vec![when, fit(&shift.who, max_chars)]           // name too long to share the line
     };
-    let mut lines = vec![first];
     if !shift.kind.is_empty() { lines.extend(wrap(&shift.kind, max_chars, MAX_TYPE_LINES)); }
     lines
 }
@@ -584,7 +587,7 @@ mod tests {
     fn layout_rules() {
         let geo = Geometry { x: 0, top: 128, bottom: 428, width: 800 };
         let h = |_: &Shift| 40;                       // (428-128-24-2) / 42 = 6 boxes per column
-        let days = vec![day(0, 3), day(1, 9), day(2, 0), day(3, 2), day(4, 1), day(5, 1)];
+        let days = vec![day(0, 3), day(1, 9), day(2, 0), day(3, 2), day(4, 1), day(5, 1), day(6, 1), day(7, 1), day(8, 1)];
         let placed = layout(&days, &geo, &h);
 
         // each day starts in a fresh column, and a column never mixes days
@@ -595,10 +598,15 @@ mod tests {
         assert_eq!(d1.len(), 9);
         assert_eq!(d1.iter().map(|p| p.col).collect::<std::collections::BTreeSet<_>>().len(), 2);
         assert!(placed.iter().any(|p| p.day == 1 && p.shift.is_none() && p.cont));
-        // columns: day0=0, day1=1-2, day2(empty)=3, day3=4 -> day 4 and 5 do not fit (COLS = 5)
+        // days are placed until there is no room for another column
+        let mut used = 0; let mut expected_last = 0;
+        for (i, d) in days.iter().enumerate() {
+            let need = ((d.shifts.len() as i32 + 5) / 6).max(1);   // 6 boxes per column
+            if used + need > COLS { break; }
+            used += need; expected_last = i;
+        }
+        assert_eq!(placed.iter().map(|p| p.day).max().unwrap(), expected_last);
         assert!(placed.iter().all(|p| p.col < COLS));
-        assert!(placed.iter().any(|p| p.day == 3));
-        assert!(!placed.iter().any(|p| p.day == 4), "no room for another column");
         // nothing below the bottom
         assert!(placed.iter().all(|p| p.y + p.h <= geo.bottom));
     }
@@ -632,6 +640,12 @@ mod tests {
             shifts, days.iter().flat_map(|d| &d.shifts).filter(|s| s.ink == Ink::Open).count(),
             m.session.lock().unwrap().as_ref().map_or(false, |s| s.lan));
         assert!(days[0].offset == 0);
+        for (name, region) in [("weekday", crate::renderer::gcal_region()), ("weekend", crate::renderer::weekend_gcal_region())] {
+            let module = MangoSchedModule::with_days(days.clone());
+            let mut canvas = E6Canvas::new(E6Color::White);
+            module.render(&mut canvas, region);
+            std::fs::write(format!("/tmp/ms_live_preview_{name}.png"), crate::packed_to_png(&canvas.pack())).unwrap();
+        }
         // second fetch reuses the cached session (no new login): must still work
         assert!(m.fetch().await.is_ok());
         // dropping the session (as after the 30-day expiry) transparently logs in again
