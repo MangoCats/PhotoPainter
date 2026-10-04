@@ -297,7 +297,7 @@ async fn get_image(
         3600
     } else if h > 6 || (h == 6 && m >= 45) {
         // 6:45am – 10:59pm: normal fast poll
-        60
+        300
     } else {
         // 5:45am – 6:44:59am: count down to 6:45am wake-up
         let now_secs:  u32 = h * 3600 + m * 60 + s;
