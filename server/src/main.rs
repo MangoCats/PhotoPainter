@@ -19,7 +19,7 @@ use axum::{
 use crate::image::{SCREEN_W, SCREEN_H};
 use tokio::sync::RwLock;
 use tracing_subscriber::{fmt, EnvFilter};
-use chrono::{Datelike, DateTime, Local, Timelike, Weekday};
+use chrono::{DateTime, Local, Timelike};
 
 use nws_cache::NwsPointsCache;
 use modules::battery::parse_battery_header;
@@ -29,7 +29,7 @@ use modules::mangosched::MangoSchedModule;
 use modules::rain::{RainModule, NearTermRain};
 use modules::stock::StockModule;
 use modules::weather::{WeatherModule, WeatherData};
-use renderer::{render, full_screen, gcal_region, weekend_gcal_region, RenderedImage};
+use renderer::{render, full_screen, gcal_region, RenderedImage};
 
 const SERVER_VERSION: &str = env!("GIT_VERSION");
 
@@ -113,26 +113,24 @@ async fn commit_displayed(
 
 async fn do_render(state: &AppState, show_version: bool) -> RenderedImage {
     let fw_ver    = state.fw_version.read().await.clone();
-    let now       = Local::now();
     let clock     = ClockModule;
     let icon_mtrx = IconMatrixModule;
-    let weekend   = matches!(now.weekday(), Weekday::Sat | Weekday::Sun);
 
     if state.icon_matrix_mode {
         let modules: &[(&dyn crate::modules::Module, _)] = &[
             (&clock,      full_screen()),
-            (&icon_mtrx,  if weekend { weekend_gcal_region() } else { gcal_region() }),
+            (&icon_mtrx,  gcal_region()),
         ];
-        return render(modules, SERVER_VERSION, &fw_ver, show_version, &state.stock, weekend);
+        return render(modules, SERVER_VERSION, &fw_ver, show_version, &state.stock);
     }
 
     let modules: &[(&dyn crate::modules::Module, _)] = &[
         (&clock,         full_screen()),
         (&state.rain,    full_screen()),
         (&state.weather, full_screen()),
-        (&state.sched,   if weekend { weekend_gcal_region() } else { gcal_region() }),
+        (&state.sched,   gcal_region()),
     ];
-    render(modules, SERVER_VERSION, &fw_ver, show_version, &state.stock, weekend)
+    render(modules, SERVER_VERSION, &fw_ver, show_version, &state.stock)
 }
 
 // ── Ticker config ─────────────────────────────────────────────────────────────
@@ -156,7 +154,6 @@ fn load_tickers() -> Vec<String> {
 async fn render_loop(state: SharedState) {
     loop {
         let now       = Local::now();
-        let weekend   = matches!(now.weekday(), Weekday::Sat | Weekday::Sun);
 
         tokio::join!(state.weather.refresh(), state.rain.refresh(), state.sched.refresh());
         let weather   = state.weather.peek();
@@ -174,7 +171,7 @@ async fn render_loop(state: SharedState) {
         };
 
         if should_render {
-            if !weekend { state.stock.refresh().await; }
+            state.stock.refresh().await;
             let image = do_render(&state, false).await;
             *state.image.write().await = image;
             commit_displayed(&state, now, weather, near_rain, batt_pct, batt_charging).await;
@@ -432,11 +429,9 @@ mod preview_tests {
     fn render_schedule_previews() {
         let html = include_str!("../testdata/mangosched_calendar.html");
         let days = modules::mangosched::parse_calendar(html).unwrap();
-        for (name, region) in [("weekday", gcal_region()), ("weekend", weekend_gcal_region())] {
-            let module = MangoSchedModule::with_days(days.clone());
-            let mut canvas = E6Canvas::new(E6Color::White);
-            module.render(&mut canvas, region);
-            std::fs::write(format!("/tmp/ms_preview_{name}.png"), packed_to_png(&canvas.pack())).unwrap();
-        }
+        let module = MangoSchedModule::with_days(days);
+        let mut canvas = E6Canvas::new(E6Color::White);
+        module.render(&mut canvas, gcal_region());
+        std::fs::write("/tmp/ms_preview.png", packed_to_png(&canvas.pack())).unwrap();
     }
 }

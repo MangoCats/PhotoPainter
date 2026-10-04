@@ -15,7 +15,6 @@ pub fn render(
     fw_ver:       &str,
     show_version: bool,
     stock:        &StockModule,
-    weekend:      bool,
 ) -> RenderedImage {
     let mut canvas = E6Canvas::new(E6Color::White);
 
@@ -32,7 +31,7 @@ pub fn render(
         let ver_text = format!("SV: {server_ver}   FW: {fw_ver}");
         let (ver_w, _) = measure_text(&ver_text, SIZE_PX, false);
         draw_text(&mut canvas, SCREEN_W - MARGIN - ver_w, line_y, &ver_text, SIZE_PX, E6Color::Black, false);
-    } else if !weekend {
+    } else {
         stock.render_strip(&mut canvas);
     }
 
@@ -50,9 +49,4 @@ pub fn full_screen() -> Rect {
 /// GCalModule derives its max_y from region.height so it never draws over the strip.
 pub fn gcal_region() -> Rect {
     Rect { x: 0, y: 0, width: SCREEN_W, height: SCREEN_H - STRIP_H }
-}
-
-/// Full screen height variants: no stock strip, so calendar can use the full height.
-pub fn weekend_gcal_region() -> Rect {
-    Rect { x: 0, y: 0, width: SCREEN_W, height: SCREEN_H }
 }

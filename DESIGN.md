@@ -304,8 +304,7 @@ render_loop (every 60 s):
   tokio::join!(weather, rain, sched).refresh()
 
   if significant_change:
-    if not weekend:
-      stock.refresh()        ← only when render is already happening
+    stock.refresh()          ← only when render is already happening
     image = render(modules)
     store image + ETag
 ```
@@ -316,7 +315,7 @@ Significant changes that trigger a re-render:
 - Forecast high or low changes ≥ 3°F
 - Near-term rain status (≤ 6-hour window) changes between None / Active / Imminent
 
-Stock data is **only fetched when a render is already being triggered** by one of the above conditions. Stock changes do not trigger renders on their own. Stock is not fetched or displayed on weekends.
+Stock data is **only fetched when a render is already being triggered** by one of the above conditions. Stock changes do not trigger renders on their own. The stock strip is shown (and its data refreshed) every day, at all hours.
 
 ### Module Trait
 
@@ -395,7 +394,7 @@ y=432 ├── Stock Strip (48px) ───────────────
 y=480 └───────────────────────────────────────────────────────────────────────┘
 ```
 
-**Bottom strip switching:** On the very first render after server startup, the bottom area shows the version bar (`SV: <git-version>   FW: <fw-version>`, right-justified, 19.2px) instead of the stock strip. All subsequent renders show the stock strip (weekdays only).
+**Bottom strip switching:** On the very first render after server startup, the bottom area shows the version bar (`SV: <git-version>   FW: <fw-version>`, right-justified, 19.2px) instead of the stock strip. All subsequent renders show the stock strip (every day).
 
 **Weather / clock coexistence:** The weather module erases the area behind its temperature block (white fill_rect from `cur_x` to right edge) before drawing, eliminating any clock text that extends into the temperature region.
 
@@ -474,7 +473,7 @@ y=480 └───────────────────────�
 - **Layout:** equal-width sections separated by 5px white vertical dividers
 - **Font:** auto-sized from max 43px down to fit the widest label; centered in each section
 - **Color:** green background = price ≥ open; red background = price < open; white text
-- **Refresh policy:** fetched only when a screen render is already being triggered; not fetched or displayed on weekends
+- **Refresh policy:** fetched only when a screen render is already being triggered; shown every day, at all hours (no weekend or time-of-day gating)
 
 ---
 
@@ -506,7 +505,7 @@ The `.rs` credential files must be created manually on each deployment — they 
 | 10 | Layout config | Hardcoded per-module constants; no runtime config file for layout |
 | 11 | Battery reporting | Single `X-Battery` request header; always sends `pct` + `mv` + `status`; adds `hrs` estimate only when discharging; estimate uses compile-time capacity and average-current constants |
 | 12 | Bank data source | *Abandoned (2026-10).* Was Teller.io; the bank module was removed — see git history |
-| 13 | Bank mode schedule | *Removed with the bank module.* Weekends: full-height calendar, no stock strip; weekdays: calendar + stock strip |
+| 13 | Bank mode schedule | *Removed with the bank module.* Every day: schedule above, stock strip below (the former weekend full-height layout without the strip was dropped 2026-10) |
 | 14 | Poll interval | Three-zone: 3600 s overnight, countdown to 6:45 AM, 300 s daytime |
 | 15 | Calendar scope | mangoSched schedule: today + every later day on its calendar page, one column per day (overflow continues in the next column) |
 | 17 | Calendar source | mangoSched viewer-account login (runtime credentials, self-renewing session); replaced Google Calendar 2026-10 |

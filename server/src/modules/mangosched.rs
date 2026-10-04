@@ -640,12 +640,10 @@ mod tests {
             shifts, days.iter().flat_map(|d| &d.shifts).filter(|s| s.ink == Ink::Open).count(),
             m.session.lock().unwrap().as_ref().map_or(false, |s| s.lan));
         assert!(days[0].offset == 0);
-        for (name, region) in [("weekday", crate::renderer::gcal_region()), ("weekend", crate::renderer::weekend_gcal_region())] {
-            let module = MangoSchedModule::with_days(days.clone());
-            let mut canvas = E6Canvas::new(E6Color::White);
-            module.render(&mut canvas, region);
-            std::fs::write(format!("/tmp/ms_live_preview_{name}.png"), crate::packed_to_png(&canvas.pack())).unwrap();
-        }
+        let module = MangoSchedModule::with_days(days.clone());
+        let mut canvas = E6Canvas::new(E6Color::White);
+        module.render(&mut canvas, crate::renderer::gcal_region());
+        std::fs::write("/tmp/ms_live_preview.png", crate::packed_to_png(&canvas.pack())).unwrap();
         // second fetch reuses the cached session (no new login): must still work
         assert!(m.fetch().await.is_ok());
         // dropping the session (as after the 30-day expiry) transparently logs in again
