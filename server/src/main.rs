@@ -4,7 +4,6 @@ mod image;
 mod location;
 mod modules;
 mod nws_cache;
-mod teller_creds;
 mod renderer;
 mod stock_creds;
 
@@ -24,7 +23,6 @@ use tracing_subscriber::{fmt, EnvFilter};
 use chrono::{Datelike, DateTime, Local, Timelike, Weekday};
 
 use nws_cache::NwsPointsCache;
-use modules::bank::BankModule;
 use modules::battery::parse_battery_header;
 use modules::clock::ClockModule;
 use modules::gcal::GCalModule;
@@ -32,7 +30,7 @@ use modules::icon_matrix::IconMatrixModule;
 use modules::rain::{RainModule, NearTermRain};
 use modules::stock::StockModule;
 use modules::weather::{WeatherModule, WeatherData};
-use renderer::{render, full_screen, gcal_region, weekend_gcal_region, weekend_gcal_below_bank_region, RenderedImage};
+use renderer::{render, full_screen, gcal_region, weekend_gcal_region, RenderedImage};
 
 const SERVER_VERSION: &str = env!("GIT_VERSION");
 
@@ -81,11 +79,9 @@ struct AppState {
     weather:           WeatherModule,
     rain:              RainModule,
     gcal:              GCalModule,
-    bank:              BankModule,
     stock:             StockModule,
     displayed:         RwLock<Option<DisplayedState>>,
     icon_matrix_mode:  bool,
-    force_bank_mode:   bool,  // set by BANK_MODE env var; also active on schedule
 }
 type SharedState = Arc<AppState>;
 
@@ -114,17 +110,6 @@ async fn commit_displayed(
     });
 }
 
-// ── Bank mode schedule ────────────────────────────────────────────────────────
-
-// Bank mode is active when forced by env var, all weekend, or weekdays 15:00-08:00.
-fn is_bank_mode(force: bool, now: DateTime<Local>) -> bool {
-    if force { return true; }
-    match now.weekday() {
-        Weekday::Sat | Weekday::Sun => true,
-        _ => now.hour() >= 15 || now.hour() < 8,
-    }
-}
-
 // ── Render helper ─────────────────────────────────────────────────────────────
 
 async fn do_render(state: &AppState, show_version: bool) -> RenderedImage {
@@ -133,26 +118,13 @@ async fn do_render(state: &AppState, show_version: bool) -> RenderedImage {
     let clock     = ClockModule;
     let icon_mtrx = IconMatrixModule;
     let weekend   = matches!(now.weekday(), Weekday::Sat | Weekday::Sun);
-    let bank_mode = is_bank_mode(state.force_bank_mode, now);
 
     if state.icon_matrix_mode {
         let modules: &[(&dyn crate::modules::Module, _)] = &[
             (&clock,      full_screen()),
             (&icon_mtrx,  if weekend { weekend_gcal_region() } else { gcal_region() }),
         ];
-        return render(modules, SERVER_VERSION, &fw_ver, show_version, &state.stock, weekend, false);
-    }
-
-    if bank_mode {
-        let bank_h = modules::bank::display_height();
-        let modules: &[(&dyn crate::modules::Module, _)] = &[
-            (&clock,         full_screen()),
-            (&state.rain,    full_screen()),
-            (&state.weather, full_screen()),
-            (&state.bank,    weekend_gcal_region()),
-            (&state.gcal,    weekend_gcal_below_bank_region(bank_h)),
-        ];
-        return render(modules, SERVER_VERSION, &fw_ver, show_version, &state.stock, weekend, true);
+        return render(modules, SERVER_VERSION, &fw_ver, show_version, &state.stock, weekend);
     }
 
     let modules: &[(&dyn crate::modules::Module, _)] = &[
@@ -161,7 +133,7 @@ async fn do_render(state: &AppState, show_version: bool) -> RenderedImage {
         (&state.weather, full_screen()),
         (&state.gcal,    if weekend { weekend_gcal_region() } else { gcal_region() }),
     ];
-    render(modules, SERVER_VERSION, &fw_ver, show_version, &state.stock, weekend, false)
+    render(modules, SERVER_VERSION, &fw_ver, show_version, &state.stock, weekend)
 }
 
 // ── Ticker config ─────────────────────────────────────────────────────────────
@@ -186,27 +158,15 @@ async fn render_loop(state: SharedState) {
     loop {
         let now       = Local::now();
         let weekend   = matches!(now.weekday(), Weekday::Sat | Weekday::Sun);
-        let bank_mode = is_bank_mode(state.force_bank_mode, now);
 
-        let bank_changed = if bank_mode {
-            let (_, _, _, bc) = tokio::join!(
-                state.weather.refresh(),
-                state.rain.refresh(),
-                state.gcal.refresh(),
-                state.bank.refresh()
-            );
-            bc
-        } else {
-            tokio::join!(state.weather.refresh(), state.rain.refresh(), state.gcal.refresh());
-            false
-        };
+        tokio::join!(state.weather.refresh(), state.rain.refresh(), state.gcal.refresh());
         let weather   = state.weather.peek();
         let near_rain = state.rain.peek_near();
         let battery   = state.weather.peek_battery();
         let batt_pct      = battery.as_ref().map(|b| b.pct);
         let batt_charging = battery.as_ref().map(|b| b.charging);
 
-        let should_render = bank_changed || {
+        let should_render = {
             let ds = state.displayed.read().await;
             match ds.as_ref() {
                 None     => true,
@@ -215,7 +175,7 @@ async fn render_loop(state: SharedState) {
         };
 
         if should_render {
-            if !weekend && !bank_mode { state.stock.refresh().await; }
+            if !weekend { state.stock.refresh().await; }
             let image = do_render(&state, false).await;
             *state.image.write().await = image;
             commit_displayed(&state, now, weather, near_rain, batt_pct, batt_charging).await;
@@ -422,19 +382,11 @@ async fn main() {
     let weather = WeatherModule::new(client.clone(), Arc::clone(&nws_cache));
     let rain    = RainModule::new(client.clone(), Arc::clone(&nws_cache));
     let gcal    = GCalModule::new(client.clone());
-    let bank    = BankModule::new();
     let stock   = StockModule::new(tickers, client);
 
     let icon_matrix_mode = std::env::var("ICON_MATRIX").is_ok();
     if icon_matrix_mode {
         tracing::info!("ICON_MATRIX mode: gcal replaced with icon grid");
-    }
-
-    let force_bank_mode = std::env::var("BANK_MODE").is_ok();
-    if force_bank_mode {
-        tracing::info!("BANK_MODE: bank balance forced on 24/7");
-    } else {
-        tracing::info!("BANK_MODE: auto — active weekends and weekdays 15:00–08:00");
     }
 
     let state: SharedState = Arc::new(AppState {
@@ -443,11 +395,9 @@ async fn main() {
         weather,
         rain,
         gcal,
-        bank,
         stock,
         displayed:  RwLock::new(None),
         icon_matrix_mode,
-        force_bank_mode,
     });
 
     // Initial render shows the version bar once; render_loop always shows the stock strip

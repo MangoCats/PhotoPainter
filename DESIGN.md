@@ -36,14 +36,12 @@ PhotoPainter/
         ├── location.rs         ← LAT/LON constants (gitignored, not in repo)
         ├── gcal_creds.rs       ← Google Calendar OAuth credentials (gitignored)
         ├── stock_creds.rs      ← Finnhub API key (gitignored)
-        ├── teller_creds.rs     ← Teller.io access token + account ID (gitignored)
         └── modules/
             ├── mod.rs          ← Module trait definition
             ├── clock.rs        ← date and time display
             ├── weather.rs      ← NWS current temperature + H/L forecast + 84px weather icons
             ├── rain.rs         ← NWS QPF rain forecast
             ├── gcal.rs         ← Google Calendar: today + tomorrow + day-after-tomorrow
-            ├── bank.rs         ← Teller.io balance + recent transactions
             └── stock.rs        ← Finnhub stock quotes
 ```
 
@@ -304,15 +302,10 @@ The server does **not** re-render on every poll. Instead, a background task (`re
 
 ```
 render_loop (every 60 s):
-  if bank_mode:
-    tokio::join!(weather, rain, gcal, bank).refresh()  ← bank throttled to 1/20min
-    bank_changed = bank returned new data
-  else:
-    tokio::join!(weather, rain, gcal).refresh()
-    bank_changed = false
+  tokio::join!(weather, rain, gcal).refresh()
 
-  if bank_changed OR significant_change:
-    if not weekend AND not bank_mode:
+  if significant_change:
+    if not weekend:
       stock.refresh()        ← only when render is already happening
     image = render(modules)
     store image + ETag
@@ -323,9 +316,8 @@ Significant changes that trigger a re-render:
 - Current temperature changes ≥ 2°F
 - Forecast high or low changes ≥ 3°F
 - Near-term rain status (≤ 6-hour window) changes between None / Active / Imminent
-- Bank balance or transactions changed (bank mode only)
 
-Stock data is **only fetched when a render is already being triggered** by one of the above conditions. Stock changes do not trigger renders on their own. Stock is not fetched or displayed during bank mode or on weekends.
+Stock data is **only fetched when a render is already being triggered** by one of the above conditions. Stock changes do not trigger renders on their own. Stock is not fetched or displayed on weekends.
 
 ### Module Trait
 
@@ -335,12 +327,12 @@ pub trait Module: Send + Sync {
 }
 ```
 
-Modules receive a `Rect` region from the renderer. Most modules receive `full_screen()` and self-manage their coordinates internally. The GCal module uses `region.y` as a vertical offset to position itself below the bank block when bank mode is active, and `region.height` to determine how many lines fit.
+Modules receive a `Rect` region from the renderer. Most modules receive `full_screen()` and self-manage their coordinates internally. The GCal module uses `region.y` as a vertical offset and `region.height` to determine how many lines fit.
 
 ### Image Pipeline
 
 ```
-Data modules refresh in parallel (bank throttled to 1/20 min)
+Data modules refresh in parallel
         │
         ▼
 Each module renders into E6Canvas [u8; 384000] (one byte per pixel)
@@ -404,35 +396,11 @@ y=432 ├── Stock Strip (48px) ───────────────
 y=480 └───────────────────────────────────────────────────────────────────────┘
 ```
 
-### Bank mode (weekends all day; weekdays 3:00 PM – 8:00 AM; or BANK_MODE=1)
-
-```
-y=0   ┌──────────────────────────────────────────────────────────────────────┐
-      │ [Clock]                                             [Weather]         │
-      │ [Rain]                                              [84px icon]       │
-      │                                                                       │
-y=96  │ ████████████████ Balance: $1,234.56 ████  ← black on yellow, 40% wide│
-y=128 ├── Bank Transactions (5 lines, 16px font) ──────────────────────────── │
-      │  04/27  -$42.10  P  Amazon                 ← white on green          │
-      │  04/26  -$8.50      Starbucks               ← white on green          │
-      │  ...up to 5 transactions...                                           │
-      ├── Google Calendar ────────────────────────────────────────────────────┤
-      │  [today's events]  [tomorrow's events]  [day-after events]            │
-      │  ...up to ~13 lines (no stock strip at bottom)...                     │
-y=480 └───────────────────────────────────────────────────────────────────────┘
-```
-
-**Balance line:** 28px font, black on yellow, left 40% of screen width, positioned one line-height above the transaction block (overlapping the lower rain/weather area where there is horizontal clearance).
-
-**Transaction lines:** 16px font, white on green. Amounts: `-` prefix = debit (money out), `+` prefix = credit (money in). Pending transactions show a ` P` suffix.
-
-**Bank query throttle:** Teller.io is queried at most once every 20 minutes. A repaint is triggered immediately when balance or transactions change.
-
 ### After 6:00 PM (all modes)
 
 Today's calendar events starting before 12:01 PM are hidden to reduce clutter, showing only afternoon and evening events plus tomorrow's and the day-after's events.
 
-**Bottom strip switching:** On the very first render after server startup, the bottom area shows the version bar (`SV: <git-version>   FW: <fw-version>`, right-justified, 19.2px) instead of the stock strip. All subsequent renders show the stock strip (normal mode only).
+**Bottom strip switching:** On the very first render after server startup, the bottom area shows the version bar (`SV: <git-version>   FW: <fw-version>`, right-justified, 19.2px) instead of the stock strip. All subsequent renders show the stock strip (weekdays only).
 
 **Weather / clock coexistence:** The weather module erases the area behind its temperature block (white fill_rect from `cur_x` to right edge) before drawing, eliminating any clock text that extends into the temperature region.
 
@@ -491,20 +459,6 @@ Today's calendar events starting before 12:01 PM are hidden to reduce clutter, s
 - **After 6:00 PM filter:** today's events starting before 12:01 PM are hidden
 - **Sort order:** all-day events first (sort_key = -1), then chronological by start time
 
-### Bank (`bank.rs`)
-
-- **Data source:** Teller.io API (`api.teller.io`)
-- **Authentication:** mTLS (certificate + private key PEM files) + HTTP Basic auth (access token as username, empty password)
-- **Credentials:** `teller_creds.rs` (gitignored) — ACCESS_TOKEN, ACCOUNT_ID, CERT_PATH, KEY_PATH
-- **Certificate files:** `teller_cert.pem` and `teller_key.pem` in the server working directory (not in repo)
-- **Queries:** `GET /accounts/{id}/balances` and `GET /accounts/{id}/transactions`
-- **Throttle:** at most one Teller API call pair every 20 minutes; repaint triggered immediately on data change
-- **Stale threshold:** "(bank offline)" shown in red if last successful fetch was > 1 hour ago
-- **Font:** 28px balance line, 16px transaction lines
-- **Balance line:** black on yellow, left 40% of screen width
-- **Transaction lines:** white on green; sign convention: `-` = debit (money out), `+` = credit; ` P` suffix = pending
-- **Active schedule:** all day Saturday and Sunday; weekdays 3:00 PM – 8:00 AM; always on if `BANK_MODE=1`
-
 ### Stock Quotes (`stock.rs`)
 
 - **Data source:** Finnhub free tier (`finnhub.io/api/v1/quote`)
@@ -517,7 +471,7 @@ Today's calendar events starting before 12:01 PM are hidden to reduce clutter, s
 - **Layout:** equal-width sections separated by 5px white vertical dividers
 - **Font:** auto-sized from max 43px down to fit the widest label; centered in each section
 - **Color:** green background = price ≥ open; red background = price < open; white text
-- **Refresh policy:** fetched only when a screen render is already being triggered; not fetched or displayed during bank mode or on weekends
+- **Refresh policy:** fetched only when a screen render is already being triggered; not fetched or displayed on weekends
 
 ---
 
@@ -528,11 +482,8 @@ Today's calendar events starting before 12:01 PM are hidden to reduce clutter, s
 | `server/src/location.rs` | `LAT` and `LON` constants for NWS API lookups |
 | `server/src/gcal_creds.rs` | Google Calendar CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN, CALENDAR_IDS |
 | `server/src/stock_creds.rs` | Finnhub API_KEY |
-| `server/src/teller_creds.rs` | Teller.io ACCESS_TOKEN, ACCOUNT_ID, CERT_PATH, KEY_PATH |
-| `server/teller_cert.pem` | Teller.io mTLS client certificate |
-| `server/teller_key.pem` | Teller.io mTLS private key |
 
-The `.rs` credential files must be created manually on each deployment — they are compiled directly into the server binary as Rust constants. The PEM files must be present in the server working directory at runtime. See `GOOGLE_CREDENTIALS.md` and `TELLER_CREDENTIALS.md` for setup instructions.
+The `.rs` credential files must be created manually on each deployment — they are compiled directly into the server binary as Rust constants. See `GOOGLE_CREDENTIALS.md` for setup instructions.
 
 ---
 
@@ -551,11 +502,11 @@ The `.rs` credential files must be created manually on each deployment — they 
 | 9 | Font library | `fontdue` (pure Rust, no system deps); `ab_glyph` was considered and rejected |
 | 10 | Layout config | Hardcoded per-module constants; no runtime config file for layout |
 | 11 | Battery reporting | Single `X-Battery` request header; always sends `pct` + `mv` + `status`; adds `hrs` estimate only when discharging; estimate uses compile-time capacity and average-current constants |
-| 12 | Bank data source | Teller.io free tier (mTLS + Basic auth); chosen over Plaid (no free tier) |
-| 13 | Bank mode schedule | Auto-active weekends + weekdays 3 PM–8 AM; `BANK_MODE=1` forces 24/7 |
-| 14 | Poll interval | Three-zone: 3600 s overnight, countdown to 6:45 AM, 60 s daytime |
+| 12 | Bank data source | *Abandoned (2026-10).* Was Teller.io; the bank module was removed — see git history |
+| 13 | Bank mode schedule | *Removed with the bank module.* Weekends: full-height calendar, no stock strip; weekdays: calendar + stock strip |
+| 14 | Poll interval | Three-zone: 3600 s overnight, countdown to 6:45 AM, 300 s daytime |
 | 15 | Calendar scope | Today + tomorrow + day-after; after 6 PM hides today's morning events |
-| 16 | Bank query rate | Throttled to once per 20 minutes; repaint on change, not on schedule |
+| 16 | Bank query rate | *Removed with the bank module* |
 
 ---
 
