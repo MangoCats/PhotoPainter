@@ -19,6 +19,9 @@ const REFRESH_OK:      Duration = Duration::from_secs(5 * 60);
 const REFRESH_RETRY:   Duration = Duration::from_secs(60);
 /// Weather older than this is drawn on a speckled-black (grey) background.
 const STALE_AFTER:     Duration = Duration::from_secs(30 * 60);
+/// A battery reading is stale after twice the poll interval the display was last given (it only
+/// reports when it polls), but never sooner than this.
+const BATT_STALE_MIN:  Duration = Duration::from_secs(30 * 60);
 
 const BATT_FONT_PX:   f32 = 14.0;
 const BATT_TOP_PAD:   i32 = 2;
@@ -28,6 +31,7 @@ const BATT_ICON_NUB:  i32 = 3;
 const BATT_ICON_W:    i32 = 22;  // BODY + NUB
 const BATT_ICON_H:    i32 = 10;
 const BATT_ICON_SEP:  i32 = 4;   // gap between icon and text
+const BATT_RING:      i32 = 6;   // speckled margin around a stale battery readout
 
 #[derive(Clone, Copy, Default, PartialEq)]
 pub enum WeatherCondition {
@@ -35,6 +39,18 @@ pub enum WeatherCondition {
     PartlyCloudyDay, PartlyCloudyNight,
     Cloudy, Rain, Thunderstorm, Snow, Fog,
     #[default] Unknown,
+}
+
+/// The latest battery report from the display, with the moment it arrived.
+struct BatteryReading {
+    info:        BatteryInfo,
+    at:          Instant,
+    stale_after: Duration,
+}
+
+/// How old a battery reading may get before it is flagged: twice the poll interval, at least 30 minutes.
+fn battery_stale_limit(poll_secs: u64) -> Duration {
+    Duration::from_secs(poll_secs.saturating_mul(2)).max(BATT_STALE_MIN)
 }
 
 #[derive(Default, Clone, Copy)]
@@ -49,7 +65,7 @@ pub struct WeatherModule {
     data:        Mutex<Option<WeatherData>>,
     last_ok:     Mutex<Option<Instant>>,
     next_attempt: Mutex<Option<Instant>>,
-    battery:     Mutex<Option<BatteryInfo>>,
+    battery:     Mutex<Option<BatteryReading>>,
     obs_station: Mutex<Option<String>>,   // cached URL for the nearest obs station
     nws_cache:   Arc<NwsPointsCache>,
     client:      reqwest::Client,
@@ -69,11 +85,13 @@ impl WeatherModule {
     }
 
     #[cfg(test)]
-    pub fn with_data(d: WeatherData, age: Duration, battery: Option<BatteryInfo>) -> Self {
+    pub fn with_data(d: WeatherData, age: Duration, battery: Option<BatteryInfo>, battery_age: Duration) -> Self {
         let m = Self::new(reqwest::Client::new(), Arc::new(NwsPointsCache::new()));
         *m.data.lock().unwrap() = Some(d);
         *m.last_ok.lock().unwrap() = Instant::now().checked_sub(age);
-        *m.battery.lock().unwrap() = battery;
+        *m.battery.lock().unwrap() = battery.map(|info| BatteryReading {
+            info, at: Instant::now().checked_sub(battery_age).unwrap(), stale_after: battery_stale_limit(300),
+        });
         m
     }
 
@@ -82,11 +100,20 @@ impl WeatherModule {
     }
 
     pub fn peek_battery(&self) -> Option<BatteryInfo> {
-        self.battery.lock().unwrap().clone()
+        self.battery.lock().unwrap().as_ref().map(|r| r.info.clone())
     }
 
-    pub fn update_battery(&self, info: Option<BatteryInfo>) {
-        *self.battery.lock().unwrap() = info;
+    /// Record the battery report that arrived with a poll (`None` clears it).  `poll_secs` is the
+    /// interval the server just told the display, which sets how long the reading stays trustworthy.
+    pub fn update_battery(&self, info: Option<BatteryInfo>, poll_secs: u64) {
+        *self.battery.lock().unwrap() = info.map(|info| BatteryReading {
+            info, at: Instant::now(), stale_after: battery_stale_limit(poll_secs),
+        });
+    }
+
+    /// True when a battery reading is held but is older than its allowed age.
+    pub fn battery_is_stale(&self) -> bool {
+        self.battery.lock().unwrap().as_ref().map_or(false, |r| r.at.elapsed() > r.stale_after)
     }
 
     /// True when we have weather data but it is more than STALE_AFTER old.
@@ -466,8 +493,9 @@ impl Module for WeatherModule {
         let Some(d) = *guard else { return };
         drop(guard);
 
-        let battery = self.battery.lock().unwrap().clone();
-        let stale   = self.is_stale();
+        let battery    = self.peek_battery();
+        let stale      = self.is_stale();
+        let batt_stale = self.battery_is_stale();
 
         let cur_str  = format!("{}", d.current_f);
         let high_str = format!("{}", d.high_f);
@@ -521,13 +549,31 @@ impl Module for WeatherModule {
         draw_text(canvas, hl_x_low,  hl_y + hl_a + HL_ROW_GAP,  &low_str,  HL_SIZE_PX,      E6Color::Green, false);
 
         if let Some(ref batt) = battery {
-            if stale {
-                // keep the battery readout on plain white so its black text stays legible
+            if stale || batt_stale {
+                // The readout always sits on plain white so its black text stays legible; a stale
+                // reading is also ringed by a small speckled grey margin.
                 let pct_w = measure_text(&format!("{}%", batt.pct), BATT_FONT_PX, false).0;
                 let box_w = pct_w + BATT_ICON_SEP + BATT_ICON_W + 6;
-                canvas.fill_rect(hl_right - box_w + 3, region.y, box_w, BATT_TOP_PAD + batt_ascent + 2, E6Color::White);
+                let (bx, bh) = (hl_right - box_w + 3, BATT_TOP_PAD + batt_ascent + 2);
+                if batt_stale {
+                    canvas.fill_rect(bx - BATT_RING, region.y, box_w + 2 * BATT_RING, bh + 2, E6Color::White);
+                    speckle(canvas, bx - BATT_RING, region.y, box_w + 2 * BATT_RING, bh + 2, 0);
+                }
+                canvas.fill_rect(bx, region.y, box_w, bh, E6Color::White);
             }
             draw_battery(canvas, batt, hl_right, region.y + BATT_TOP_PAD, batt_ascent);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn battery_staleness_follows_the_poll_interval() {
+        assert_eq!(battery_stale_limit(300),  Duration::from_secs(30 * 60), "daytime: same 30 minutes as the weather");
+        assert_eq!(battery_stale_limit(3600), Duration::from_secs(2 * 3600), "overnight: two missed hourly polls");
+        assert_eq!(battery_stale_limit(1),    Duration::from_secs(30 * 60), "never sooner than 30 minutes");
     }
 }

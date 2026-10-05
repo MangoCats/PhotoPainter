@@ -259,6 +259,10 @@ The weather block shows the reading as a battery icon plus `NN%` at the top righ
 or standby (with a yellow lightning bolt), green at ≥ 25 %, yellow at ≥ 10 %, red below 10 %. A re-render is triggered when the charging state
 changes or the charge level moves by ≥ 5 %.
 
+The display only reports when it polls, so a reading can go out of date. One older than twice the poll interval last given to the
+display (never less than 30 minutes: 30 minutes by day, 2 hours overnight) is flagged by a small speckled-grey margin around
+the readout, which itself stays on white. Going stale, or recovering, triggers a re-render.
+
 ---
 
 ### Configuration (`firmware/include/config.h`)
@@ -327,7 +331,7 @@ Significant changes that trigger a re-render:
 - Forecast high or low changes ≥ 3°F
 - Near-term rain status (≤ 6-hour window) changes between None / Active / Imminent
 - Battery charging state changes, or the charge level moves by ≥ 5 %
-- The weather data goes stale (more than 30 minutes old) or recovers
+- The weather data goes stale (more than 30 minutes old) or recovers, or the battery reading goes stale or recovers
 - The schedule changes (a different set of days or shifts, which includes the day labels rolling over after midnight)
 
 Stock data is **only fetched when a render is already being triggered** by one of the above conditions. Stock changes do not trigger renders on their own. The stock strip is shown (and its data refreshed) every day, at all hours.
@@ -413,7 +417,7 @@ y=480 └───────────────────────�
 
 **Bottom strip switching:** The first render after server startup, and the render that follows a firmware change reported by the device (a change from a known version, not the version being learned again after a server restart), show the version bar (`SV: <git-version>   FW: <fw-version>`, right-justified, 19.2px) instead of the stock strip. Every other render shows the stock strip, every day.
 
-**Weather / clock coexistence:** The weather module erases the area behind its temperature block (white fill_rect from `cur_x` to right edge) before drawing, eliminating any clock text that extends into the temperature region. When the weather data is more than 30 minutes old (the refresh keeps failing) that area, and the daytime icon cell, are filled with a grey speckled-black pattern (one black pixel in four) instead of plain white; the battery readout stays on white so it remains legible.
+**Weather / clock coexistence:** The weather module erases the area behind its temperature block (white fill_rect from `cur_x` to right edge) before drawing, eliminating any clock text that extends into the temperature region. When the weather data is more than 30 minutes old (the refresh keeps failing) that area, and the daytime icon cell, are filled with a grey speckled-black pattern (one black pixel in four) instead of plain white; the battery readout stays on white so it remains legible (a stale battery reading gets its own small speckled margin, see Battery Status Reporting).
 
 ---
 

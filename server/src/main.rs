@@ -42,6 +42,7 @@ struct Inputs {
     batt_pct:      Option<i32>,
     batt_charging: Option<bool>,
     weather_stale: bool,
+    battery_stale: bool,
     sched_rev:     u64,
 }
 
@@ -53,6 +54,7 @@ fn sample_inputs(state: &AppState) -> Inputs {
         batt_pct:      battery.as_ref().map(|b| b.pct),
         batt_charging: battery.as_ref().map(|b| b.charging),
         weather_stale: state.weather.is_stale(),
+        battery_stale: state.weather.battery_is_stale(),
         sched_rev:     state.sched.revision(),
     }
 }
@@ -67,6 +69,7 @@ struct DisplayedState {
     batt_pct:       Option<i32>,
     batt_charging:  Option<bool>,
     weather_stale:  bool,
+    battery_stale:  bool,
     sched_rev:      u64,
 }
 
@@ -85,8 +88,9 @@ fn is_significant_change(displayed: &DisplayedState, cur: &Inputs, now: DateTime
     if let (Some(c), Some(p)) = (cur.batt_pct, displayed.batt_pct) {
         if (c - p).abs() >= 5 { return true; }
     }
-    // Weather went stale (grey background) or recovered
+    // Weather or the battery reading went stale (grey speckle) or recovered
     if cur.weather_stale != displayed.weather_stale { return true; }
+    if cur.battery_stale != displayed.battery_stale { return true; }
     // The schedule changed (including its day labels rolling over at midnight)
     if cur.sched_rev != displayed.sched_rev { return true; }
     false
@@ -122,6 +126,7 @@ async fn commit_displayed(state: &AppState, now: DateTime<Local>, inp: Inputs) {
         batt_pct:      inp.batt_pct.or_else(|| prev.and_then(|d| d.batt_pct)),
         batt_charging: inp.batt_charging.or_else(|| prev.and_then(|d| d.batt_charging)),
         weather_stale: inp.weather_stale,
+        battery_stale: inp.battery_stale,
         sched_rev:     inp.sched_rev,
     });
 }
@@ -197,6 +202,25 @@ async fn render_loop(state: SharedState) {
     }
 }
 
+// ── Poll interval ─────────────────────────────────────────────────────────────
+
+/// Seconds the display should sleep before its next poll, from the time of day.
+fn poll_interval_secs(now: DateTime<Local>) -> u64 {
+    let (h, m, s) = (now.hour(), now.minute(), now.second());
+    if h >= 23 || h < 5 || (h == 5 && m < 45) {
+        // 11:00pm – 5:44:59am: deep-night long poll
+        3600
+    } else if h > 6 || (h == 6 && m >= 45) {
+        // 6:45am – 10:59pm: normal fast poll
+        300
+    } else {
+        // 5:45am – 6:44:59am: count down to 6:45am wake-up
+        let now_secs:  u32 = h * 3600 + m * 60 + s;
+        let wake_secs: u32 = 6 * 3600 + 45 * 60; // 24300
+        u64::from(wake_secs.saturating_sub(now_secs)).max(1)
+    }
+}
+
 // ── GET /api/image ────────────────────────────────────────────────────────────
 
 async fn get_image(
@@ -221,7 +245,8 @@ async fn get_image(
             batt.hrs.map(|h| format!(" {:.1}h", h)).unwrap_or_default()
         );
     }
-    state.weather.update_battery(batt_info);
+    let poll_secs = poll_interval_secs(Local::now());
+    state.weather.update_battery(batt_info, poll_secs);
 
     // New firmware version → re-render immediately.  After a server restart the version is merely
     // learned again ("unknown" → X) and the screen is redrawn as usual; a change from a known
@@ -254,22 +279,6 @@ async fn get_image(
         .unwrap_or("");
 
     let mut headers = HeaderMap::new();
-    let now  = Local::now();
-    let h    = now.hour();
-    let m    = now.minute();
-    let s    = now.second();
-    let poll_secs: u64 = if h >= 23 || h < 5 || (h == 5 && m < 45) {
-        // 11:00pm – 5:44:59am: deep-night long poll
-        3600
-    } else if h > 6 || (h == 6 && m >= 45) {
-        // 6:45am – 10:59pm: normal fast poll
-        300
-    } else {
-        // 5:45am – 6:44:59am: count down to 6:45am wake-up
-        let now_secs:  u32 = h * 3600 + m * 60 + s;
-        let wake_secs: u32 = 6 * 3600 + 45 * 60; // 24300
-        u64::from(wake_secs.saturating_sub(now_secs)).max(1)
-    };
     add_common_headers(&mut headers, &etag_value, poll_secs);
 
     if client_etag == etag_value {
@@ -450,18 +459,20 @@ mod preview_tests {
         let now = Local::now();
         let displayed = DisplayedState {
             refresh_time: now, current_temp_f: 70, high_f: 80, low_f: 60, near_rain: NearTermRain::None,
-            batt_pct: Some(50), batt_charging: Some(false), weather_stale: false, sched_rev: 3,
+            batt_pct: Some(50), batt_charging: Some(false), weather_stale: false, battery_stale: false, sched_rev: 3,
         };
         let same = || Inputs {
             weather: Some(WeatherData { current_f: 70, high_f: 80, low_f: 60, ..Default::default() }),
             near_rain: NearTermRain::None, batt_pct: Some(50), batt_charging: Some(false),
-            weather_stale: false, sched_rev: 3,
+            weather_stale: false, battery_stale: false, sched_rev: 3,
         };
         assert!(!is_significant_change(&displayed, &same(), now), "nothing changed");
         let mut i = same(); i.sched_rev = 4;
         assert!(is_significant_change(&displayed, &i, now), "a schedule change must re-render");
         let mut i = same(); i.weather_stale = true;
         assert!(is_significant_change(&displayed, &i, now), "weather going stale must re-render");
+        let mut i = same(); i.battery_stale = true;
+        assert!(is_significant_change(&displayed, &i, now), "the battery reading going stale must re-render");
     }
 
     /// Renders the weather block fresh and stale (speckled background) for eyeballing.
@@ -471,9 +482,11 @@ mod preview_tests {
         use crate::modules::battery::BatteryInfo;
         let data = WeatherData { current_f: 76, high_f: 81, low_f: 73, ..Default::default() };
         let batt = Some(BatteryInfo { pct: 57, mv: 3800, hrs: None, charging: false });
-        for (name, age) in [("fresh", 60u64), ("stale", 31 * 60)] {
-            let w = WeatherModule::with_data(data, Duration::from_secs(age), batt.clone());
+        // (name, weather age, battery age) in seconds
+        for (name, age, batt_age) in [("fresh", 60u64, 60u64), ("stale", 31 * 60, 31 * 60), ("battery_stale", 60, 31 * 60)] {
+            let w = WeatherModule::with_data(data, Duration::from_secs(age), batt.clone(), Duration::from_secs(batt_age));
             assert_eq!(w.is_stale(), name == "stale");
+            assert_eq!(w.battery_is_stale(), batt_age > 30 * 60);
             let mut canvas = E6Canvas::new(E6Color::White);
             ClockModule.render(&mut canvas, full_screen());
             w.render(&mut canvas, full_screen());
